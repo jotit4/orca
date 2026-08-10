@@ -41,6 +41,24 @@ export function updateMainVerticalAfterSplit(
   }
 }
 
+// Why: a pane must leave the registry the same way no matter how its terminal
+// died — `kill-pane` through the shim, an explicit close, or a natural PTY exit.
+// A pane left behind still answers `list-panes` and can be picked as a split
+// origin, so the next `split-window` targets a dead handle and fails with
+// `terminal_exited`, taking down teammate spawning for the rest of the session.
+export function forgetPane(team: AgentTeam, fakePaneId: string): void {
+  team.panes.delete(fakePaneId)
+  team.paneOrder = team.paneOrder.filter((id) => id !== fakePaneId)
+  if (team.mainVertical?.lastColumnPane === fakePaneId) {
+    team.mainVertical.lastColumnPane =
+      [...team.paneOrder].toReversed().find((id) => id !== team.leaderPane) ?? null
+  }
+  // Why: `last-pane` focuses this id later; a dead one would throw on focus.
+  if (team.previouslyFocusedPane === fakePaneId) {
+    team.previouslyFocusedPane = null
+  }
+}
+
 export function formatContext(team: AgentTeam, pane: TeamPane): Record<string, string> {
   return {
     session_name: team.sessionName,

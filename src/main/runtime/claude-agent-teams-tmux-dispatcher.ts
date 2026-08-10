@@ -5,6 +5,7 @@ import {
   tmuxValue
 } from '../../shared/claude-agent-teams-tmux-compat'
 import {
+  forgetPane,
   formatContext,
   paneEnv,
   resolveSplitTarget,
@@ -267,12 +268,7 @@ export class ClaudeAgentTeamsTmuxDispatcher {
       throw new Error('refusing to kill leader pane')
     }
     await api.closeTerminal(pane.handle)
-    team.panes.delete(pane.fakePaneId)
-    team.paneOrder = team.paneOrder.filter((id) => id !== pane.fakePaneId)
-    if (team.mainVertical?.lastColumnPane === pane.fakePaneId) {
-      team.mainVertical.lastColumnPane =
-        [...team.paneOrder].toReversed().find((id) => id !== team.leaderPane) ?? null
-    }
+    forgetPane(team, pane.fakePaneId)
     return ''
   }
 

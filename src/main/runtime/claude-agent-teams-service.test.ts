@@ -268,4 +268,42 @@ describe('ClaudeAgentTeamsService', () => {
       }
     }
   })
+
+  // Regression: a teammate pane whose terminal died outside the shim (UI close,
+  // handle-addressed close, or the teammate process exiting) stayed registered,
+  // so `list-panes` still reported it and the next `split-window` used its dead
+  // handle as the split origin. In the app that surfaced as
+  // `Failed to create teammate pane: tmux: terminal_exited` on every subsequent
+  // spawn until Orca was restarted.
+  it('drops a teammate pane whose terminal died outside the shim', async () => {
+    const { service, teamId, token, leaderPane, api, splitCalls } = createServiceWithLeader()
+    const request = (argv: string[]) =>
+      service.handleTmuxCompat({ teamId, token, envPane: leaderPane, argv }, api)
+
+    await request(['split-window', '-t', leaderPane, '-h', '-l', '70%', '-P', '-F', '#{pane_id}'])
+    await request(['select-layout', '-t', 'orca:0', 'main-vertical'])
+    await expect(
+      request(['list-panes', '-t', 'orca:0', '-F', '#{pane_id}'])
+    ).resolves.toMatchObject({ stdout: '%1\n%2\n' })
+
+    service.forgetTerminalHandle('teammate-1')
+
+    await expect(
+      request(['list-panes', '-t', 'orca:0', '-F', '#{pane_id}'])
+    ).resolves.toMatchObject({ stdout: '%1\n' })
+
+    await expect(
+      request(['split-window', '-t', leaderPane, '-h', '-l', '70%', '-P', '-F', '#{pane_id}'])
+    ).resolves.toMatchObject({ exitCode: 0 })
+    expect(splitCalls.at(-1)?.handle).toBe('leader-handle')
+  })
+
+  it('keeps the team alive when a teammate handle is forgotten', () => {
+    const { service } = createServiceWithLeader()
+    service.forgetTerminalHandle('teammate-1')
+    expect(service.getActiveTeamCount()).toBe(1)
+
+    service.forgetTerminalHandle('leader-handle')
+    expect(service.getActiveTeamCount()).toBe(0)
+  })
 })

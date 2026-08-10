@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import { splitTmuxCommand } from '../../shared/claude-agent-teams-tmux-compat'
+import { forgetPane } from './claude-agent-teams-pane-layout'
 import { ClaudeAgentTeamsTmuxDispatcher } from './claude-agent-teams-tmux-dispatcher'
 import { resolvePathEnvKey } from '../pty/windows-environment-path'
 import type {
@@ -76,12 +77,30 @@ export class ClaudeAgentTeamsService {
     return { teamId, token, leaderPane, env }
   }
 
-  removeTeamForLeaderHandle(handle: string): void {
+  // Why: every terminal teardown path must reach the team registry, whichever
+  // pane died. Evicting only the leader left a teammate pane registered against
+  // a dead handle: `list-panes` kept reporting it and `resolveSplitTarget` kept
+  // picking it as a split origin, so the next `split-window` hit a dead terminal
+  // and Claude Code reported `Failed to create teammate pane: tmux:
+  // terminal_exited` for the rest of the session — no matter how the pane was
+  // closed (UI close, `closeTerminal`, or the teammate process exiting).
+  forgetTerminalHandle(handle: string): void {
     for (const [teamId, team] of this.teams) {
       if (team.leaderHandle === handle) {
         this.teams.delete(teamId)
+        continue
+      }
+      const pane = [...team.panes.values()].find(
+        (candidate) => candidate.handle === handle && candidate.fakePaneId !== team.leaderPane
+      )
+      if (pane) {
+        forgetPane(team, pane.fakePaneId)
       }
     }
+  }
+
+  removeTeamForLeaderHandle(handle: string): void {
+    this.forgetTerminalHandle(handle)
   }
 
   getActiveTeamCount(): number {

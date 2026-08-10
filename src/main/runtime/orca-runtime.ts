@@ -13627,13 +13627,15 @@ export class OrcaRuntimeService {
     this.terminalFileUriHostnameByPtyId.delete(ptyId)
     this.wslDistroByPtyId.delete(ptyId)
     this.clearAgentRowSnapshotsForPty(ptyId)
-    // Why: a Claude agent-team leader whose PTY exits naturally (agent finished,
-    // process died, renderer reload) must release its team + nested panes map.
-    // Previously only explicit closeTerminal evicted it, so natural exits leaked
-    // one team per never-reused teamId for the runtime's lifetime.
-    const exitedTeamLeaderHandle = this.handleByPtyId.get(ptyId)
-    if (exitedTeamLeaderHandle) {
-      this.claudeAgentTeams.removeTeamForLeaderHandle(exitedTeamLeaderHandle)
+    // Why: a Claude agent-team PTY that exits naturally (agent finished, process
+    // died, renderer reload) must leave the team registry. For a leader that
+    // releases the team + nested panes map, which previously only explicit
+    // closeTerminal did, leaking one team per never-reused teamId. For a
+    // teammate pane it drops the pane, without which the registry keeps a dead
+    // handle that later `split-window`s pick as their origin.
+    const exitedTeamHandle = this.handleByPtyId.get(ptyId)
+    if (exitedTeamHandle) {
+      this.claudeAgentTeams.forgetTerminalHandle(exitedTeamHandle)
     }
     // Layout state machine: clear `layouts` and `layoutQueues`. Any
     // already-queued applyLayout work for this ptyId will run, but every
@@ -27122,7 +27124,7 @@ export class OrcaRuntimeService {
 
   async closeTerminal(handle: string): Promise<RuntimeTerminalClose> {
     const pty = this.getLivePtyForHandle(handle)
-    this.claudeAgentTeams.removeTeamForLeaderHandle(handle)
+    this.claudeAgentTeams.forgetTerminalHandle(handle)
     if (pty) {
       // Why: PTY exit can immediately replace a ready SSH publication with a pending one, so capture its durable HUB surface before killing it.
       const surface =
@@ -27176,13 +27178,13 @@ export class OrcaRuntimeService {
       // Why: a handle-addressed CLI/automation close is an explicit intent, so
       // it must stay destructive under the non-user close adjudication gate.
       await this.closeMobileSessionTab(`id:${pty.pty.worktreeId}`, tabId, { reason: 'user' })
-      this.claudeAgentTeams.removeTeamForLeaderHandle(handle)
+      this.claudeAgentTeams.forgetTerminalHandle(handle)
       return { handle, tabId, closeMode: 'tab', ptyKilled: false }
     }
     this.assertGraphReady()
     const { leaf } = this.getLiveLeafForHandle(handle)
     await this.closeMobileSessionTab(`id:${leaf.worktreeId}`, leaf.tabId, { reason: 'user' })
-    this.claudeAgentTeams.removeTeamForLeaderHandle(handle)
+    this.claudeAgentTeams.forgetTerminalHandle(handle)
     return { handle, tabId: leaf.tabId, closeMode: 'tab', ptyKilled: false }
   }
 
@@ -29688,7 +29690,7 @@ export class OrcaRuntimeService {
     const handle = this.handleByPtyId.get(ptyId)
     if (handle) {
       // Why: pruning can remove a PTY without onPtyExit firing; release this leader's agent team so it doesn't leak.
-      this.claudeAgentTeams.removeTeamForLeaderHandle(handle)
+      this.claudeAgentTeams.forgetTerminalHandle(handle)
       this.handleByPtyId.delete(ptyId)
       this.syntheticTerminalHandles.delete(handle)
       const record = this.handles.get(handle)
