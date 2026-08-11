@@ -25522,6 +25522,10 @@ export class OrcaRuntimeService {
                 createTeamEnv: (shimDir, shimBin) =>
                   this.claudeAgentTeams.createLaunchEnv({
                     leaderHandle: preAllocatedHandle,
+                    // Why (#11739): paneKey is already minted above for the hook
+                    // path; reuse it so the leader pane can recover from a stale
+                    // handle instead of failing every tmux call for the session.
+                    leaderPaneKey: paneKey,
                     baseEnv: {
                       ...process.env,
                       ...baseEnv
@@ -27337,7 +27341,12 @@ export class OrcaRuntimeService {
       sendTerminal: (handle, action) => this.sendTerminal(handle, action),
       focusTerminal: (handle) => this.focusTerminal(handle),
       closeTerminal: (handle) => this.closeTerminal(handle),
-      showTerminal: (handle) => this.showTerminal(handle)
+      showTerminal: (handle) => this.showTerminal(handle),
+      // Why (#11739): re-expose the same handle<->paneKey resolution the general
+      // orchestration path already uses (PR #7514) so the shim dispatcher can
+      // recover from a stale cached handle instead of failing outright.
+      resolvePaneKeyForHandle: (handle) => this.getPaneKeyForTerminalHandle(handle),
+      resolveHandleForPaneKey: (paneKey) => this.getTerminalHandleForPaneKey(paneKey)
     })
   }
 
@@ -27367,6 +27376,10 @@ export class OrcaRuntimeService {
     const shimBin = resolveClaudeAgentTeamsShimBin(baseEnv)
     return this.claudeAgentTeams.createLaunchEnv({
       leaderHandle: args.handle,
+      // Why (#11739): best-effort — a freshly pre-allocated handle may not have
+      // a resolvable pane yet, in which case the leader just can't self-heal a
+      // future stale handle (no regression versus before this fix).
+      leaderPaneKey: this.getPaneKeyForTerminalHandle(args.handle) ?? undefined,
       baseEnv,
       shimDir,
       shimBin

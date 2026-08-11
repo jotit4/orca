@@ -11,6 +11,7 @@ import {
   resolveSplitTarget,
   updateMainVerticalAfterSplit
 } from './claude-agent-teams-pane-layout'
+import { isStaleHandleError, withLiveHandle } from './claude-agent-teams-handle-refresh'
 import type { AgentTeam, AgentTeamsTerminalApi, TeamPane } from './claude-agent-teams-types'
 
 type ResolvedTarget = { type: 'pane'; pane: TeamPane } | { type: 'window' }
@@ -114,19 +115,24 @@ export class ClaudeAgentTeamsTmuxDispatcher {
     const fakePaneId = `%${team.nextPaneNumber}`
     team.nextPaneNumber += 1
     const splitTarget = resolveSplitTarget(team, targetPane, parsed.flags.has('-h'))
-    const split = await api.splitTerminal(splitTarget.pane.handle, {
-      direction: splitTarget.direction,
-      command: parsed.positional.join(' ') || undefined,
-      env: paneEnv(team, fakePaneId),
-      envToDelete: ['TERM_PROGRAM', 'ORCA_ATTRIBUTION_SHIM_DIR'],
-      activate: false
-    })
+    const split = await withLiveHandle(splitTarget.pane, api, (handle) =>
+      api.splitTerminal(handle, {
+        direction: splitTarget.direction,
+        command: parsed.positional.join(' ') || undefined,
+        env: paneEnv(team, fakePaneId),
+        envToDelete: ['TERM_PROGRAM', 'ORCA_ATTRIBUTION_SHIM_DIR'],
+        activate: false
+      })
+    )
     const pane: TeamPane = {
       fakePaneId,
       handle: split.handle,
       index: team.paneOrder.length,
       splitFromPane: splitTarget.pane.fakePaneId,
-      splitDirection: splitTarget.direction
+      splitDirection: splitTarget.direction,
+      // Why (#11739): capture identity now, while the handle is freshest, so
+      // this pane can self-heal the next time its handle goes stale.
+      paneKey: api.resolvePaneKeyForHandle(split.handle) ?? undefined
     }
     team.panes.set(fakePaneId, pane)
     team.paneOrder.push(fakePaneId)
@@ -165,20 +171,29 @@ export class ClaudeAgentTeamsTmuxDispatcher {
     // split leaves the fake pane id pointing at a still-live terminal; on cleanup
     // failure, discard the new split and keep the placeholder registered.
     const previousHandle = pane.handle
-    const split = await api.splitTerminal(origin.handle, {
-      direction: pane.splitDirection ?? 'horizontal',
-      command,
-      env: paneEnv(team, pane.fakePaneId),
-      envToDelete: ['TERM_PROGRAM', 'ORCA_ATTRIBUTION_SHIM_DIR'],
-      activate: false
-    })
+    const split = await withLiveHandle(origin, api, (handle) =>
+      api.splitTerminal(handle, {
+        direction: pane.splitDirection ?? 'horizontal',
+        command,
+        env: paneEnv(team, pane.fakePaneId),
+        envToDelete: ['TERM_PROGRAM', 'ORCA_ATTRIBUTION_SHIM_DIR'],
+        activate: false
+      })
+    )
     try {
       await api.closeTerminal(previousHandle)
     } catch (error) {
-      await api.closeTerminal(split.handle).catch(() => {})
-      throw error
+      // Why: the placeholder is already gone if its own handle went stale —
+      // that is the expected shape of this failure, not a cleanup problem.
+      if (!isStaleHandleError(error)) {
+        await api.closeTerminal(split.handle).catch(() => {})
+        throw error
+      }
     }
     pane.handle = split.handle
+    // Why (#11739): respawn mints a new terminal, so the identity behind
+    // `handle` changes too — refresh it alongside the handle.
+    pane.paneKey = api.resolvePaneKeyForHandle(split.handle) ?? pane.paneKey
     return ''
   }
 
@@ -222,7 +237,7 @@ export class ClaudeAgentTeamsTmuxDispatcher {
     const pane = this.resolvePane(team, tmuxValue(parsed, '-t') ?? envPane)
     const text = tmuxSendKeysText(parsed.positional, parsed.flags.has('-l'))
     if (text) {
-      await api.sendTerminal(pane.handle, { text })
+      await withLiveHandle(pane, api, (handle) => api.sendTerminal(handle, { text }))
     }
     return ''
   }
@@ -235,7 +250,9 @@ export class ClaudeAgentTeamsTmuxDispatcher {
   ): Promise<string> {
     const parsed = parseTmuxArgs(args, ['-E', '-S', '-t'], ['-J', '-N', '-p'])
     const pane = this.resolvePane(team, tmuxValue(parsed, '-t') ?? envPane)
-    const read = await api.readTerminal(pane.handle, { limit: 1000 })
+    const read = await withLiveHandle(pane, api, (handle) =>
+      api.readTerminal(handle, { limit: 1000 })
+    )
     const text = read.tail.join('\n')
     return parsed.flags.has('-p') ? `${text}\n` : ''
   }
@@ -252,7 +269,7 @@ export class ClaudeAgentTeamsTmuxDispatcher {
     }
     const pane = this.resolvePane(team, tmuxValue(parsed, '-t') ?? envPane)
     team.previouslyFocusedPane = envPane
-    await api.focusTerminal(pane.handle)
+    await withLiveHandle(pane, api, (handle) => api.focusTerminal(handle))
     return ''
   }
 
@@ -267,7 +284,16 @@ export class ClaudeAgentTeamsTmuxDispatcher {
     if (pane.fakePaneId === team.leaderPane) {
       throw new Error('refusing to kill leader pane')
     }
-    await api.closeTerminal(pane.handle)
+    try {
+      await withLiveHandle(pane, api, (handle) => api.closeTerminal(handle))
+    } catch (error) {
+      // Why: a handle that is stale and unrecoverable via paneKey means the
+      // terminal is already gone — the caller's intent (make it not exist) is
+      // already satisfied, so don't fail the kill over it.
+      if (!isStaleHandleError(error)) {
+        throw error
+      }
+    }
     forgetPane(team, pane.fakePaneId)
     return ''
   }
@@ -280,7 +306,7 @@ export class ClaudeAgentTeamsTmuxDispatcher {
     parseTmuxArgs(args, ['-t'], [])
     const pane = team.previouslyFocusedPane ? team.panes.get(team.previouslyFocusedPane) : null
     if (pane) {
-      await api.focusTerminal(pane.handle)
+      await withLiveHandle(pane, api, (handle) => api.focusTerminal(handle))
     }
     return ''
   }

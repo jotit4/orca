@@ -25,6 +25,9 @@ export class ClaudeAgentTeamsService {
 
   createLaunchEnv(args: {
     leaderHandle: string
+    // Why (#11739): captured at launch when the caller already knows it, so the
+    // leader pane can recover from a stale handle the same way teammate panes do.
+    leaderPaneKey?: string
     baseEnv: Record<string, string | undefined>
     shimDir: string
     shimBin: string
@@ -58,7 +61,12 @@ export class ClaudeAgentTeamsService {
       env.ORCA_ENVIRONMENT = args.baseEnv.ORCA_ENVIRONMENT
     }
 
-    const leader: TeamPane = { fakePaneId: leaderPane, handle: args.leaderHandle, index: 0 }
+    const leader: TeamPane = {
+      fakePaneId: leaderPane,
+      handle: args.leaderHandle,
+      index: 0,
+      paneKey: args.leaderPaneKey
+    }
     this.teams.set(teamId, {
       teamId,
       token,

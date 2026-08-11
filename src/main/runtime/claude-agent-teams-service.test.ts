@@ -8,10 +8,19 @@ function createServiceWithLeader(): {
   leaderPane: string
   api: AgentTeamsTerminalApi
   splitCalls: { handle: string; direction?: string; command?: string; envPane?: string }[]
+  // Why (#11739): lets a test simulate a runtime handle remint — mark a handle
+  // stale and point its paneKey at the fresh replacement — without needing a
+  // real runtime.
+  staleHandles: Set<string>
+  handleByPaneKey: Map<string, string>
 } {
   const service = new ClaudeAgentTeamsService()
+  const paneKeyByHandle = new Map<string, string>([['leader-handle', 'tab-1:leader-leaf']])
+  const handleByPaneKey = new Map<string, string>([['tab-1:leader-leaf', 'leader-handle']])
+  const staleHandles = new Set<string>()
   const launch = service.createLaunchEnv({
     leaderHandle: 'leader-handle',
+    leaderPaneKey: 'tab-1:leader-leaf',
     baseEnv: { PATH: '/usr/bin' },
     shimDir: '/tmp/orca-shim',
     shimBin: '/usr/bin/orca'
@@ -20,8 +29,14 @@ function createServiceWithLeader(): {
   const splitCalls: { handle: string; direction?: string; command?: string; envPane?: string }[] =
     []
   let splitCount = 0
+  const throwIfStale = (handle: string): void => {
+    if (staleHandles.has(handle)) {
+      throw new Error('terminal_handle_stale')
+    }
+  }
   const api: AgentTeamsTerminalApi = {
     splitTerminal: vi.fn(async (handle, opts) => {
+      throwIfStale(handle)
       splitCount += 1
       splitCalls.push({
         handle,
@@ -29,22 +44,38 @@ function createServiceWithLeader(): {
         command: opts.command,
         envPane: opts.env?.TMUX_PANE
       })
-      return { handle: `teammate-${splitCount}`, tabId: 'tab-1', paneRuntimeId: -1 }
+      const newHandle = `teammate-${splitCount}`
+      const paneKey = `tab-1:teammate-leaf-${splitCount}`
+      paneKeyByHandle.set(newHandle, paneKey)
+      handleByPaneKey.set(paneKey, newHandle)
+      return { handle: newHandle, tabId: 'tab-1', paneRuntimeId: -1 }
     }),
-    readTerminal: vi.fn(async (handle) => ({
-      handle,
-      status: 'running' as const,
-      tail: ['line one', 'line two'],
-      truncated: false,
-      nextCursor: null
-    })),
-    sendTerminal: vi.fn(async (handle, action) => ({
-      handle,
-      accepted: Boolean(action.text),
-      bytesWritten: action.text?.length ?? 0
-    })),
-    focusTerminal: vi.fn(async (handle) => ({ handle, tabId: 'tab-1', worktreeId: 'wt-1' })),
-    closeTerminal: vi.fn(async (handle) => ({ handle, tabId: 'tab-1', ptyKilled: true })),
+    readTerminal: vi.fn(async (handle) => {
+      throwIfStale(handle)
+      return {
+        handle,
+        status: 'running' as const,
+        tail: ['line one', 'line two'],
+        truncated: false,
+        nextCursor: null
+      }
+    }),
+    sendTerminal: vi.fn(async (handle, action) => {
+      throwIfStale(handle)
+      return {
+        handle,
+        accepted: Boolean(action.text),
+        bytesWritten: action.text?.length ?? 0
+      }
+    }),
+    focusTerminal: vi.fn(async (handle) => {
+      throwIfStale(handle)
+      return { handle, tabId: 'tab-1', worktreeId: 'wt-1' }
+    }),
+    closeTerminal: vi.fn(async (handle) => {
+      throwIfStale(handle)
+      return { handle, tabId: 'tab-1', ptyKilled: true }
+    }),
     showTerminal: vi.fn(async (handle) => ({
       handle,
       worktreeId: 'wt-1',
@@ -60,7 +91,9 @@ function createServiceWithLeader(): {
       paneRuntimeId: -1,
       ptyId: 'pty-1',
       rendererGraphEpoch: 1
-    }))
+    })),
+    resolvePaneKeyForHandle: vi.fn((handle) => paneKeyByHandle.get(handle) ?? null),
+    resolveHandleForPaneKey: vi.fn((paneKey) => handleByPaneKey.get(paneKey) ?? null)
   }
   return {
     service,
@@ -68,7 +101,9 @@ function createServiceWithLeader(): {
     token: launch.token,
     leaderPane: launch.leaderPane,
     api,
-    splitCalls
+    splitCalls,
+    staleHandles,
+    handleByPaneKey
   }
 }
 
@@ -305,5 +340,63 @@ describe('ClaudeAgentTeamsService', () => {
 
     service.forgetTerminalHandle('leader-handle')
     expect(service.getActiveTeamCount()).toBe(0)
+  })
+
+  // Regression (#11739): the leader/teammate pane's raw handle is only as
+  // durable as the runtime process that minted it — a restart or handle
+  // remint invalidates it while the pane's paneKey identity stays valid. The
+  // general orchestration path already re-resolves through the paneKey on a
+  // `terminal_handle_stale` failure (PR #7514); the agent-teams shim path did
+  // not, so every subsequent tmux call failed for the rest of the session.
+  it('re-resolves a stale leader handle through its paneKey instead of failing the split', async () => {
+    const { service, teamId, token, leaderPane, api, splitCalls, staleHandles, handleByPaneKey } =
+      createServiceWithLeader()
+    const request = (argv: string[]) =>
+      service.handleTmuxCompat({ teamId, token, envPane: leaderPane, argv }, api)
+
+    // Simulate a runtime handle remint: the leader's old handle is dead, but
+    // its paneKey now resolves to a fresh one.
+    staleHandles.add('leader-handle')
+    handleByPaneKey.set('tab-1:leader-leaf', 'leader-handle-reminted')
+
+    await expect(
+      request(['split-window', '-t', leaderPane, '-h', '-l', '70%', '-P', '-F', '#{pane_id}'])
+    ).resolves.toMatchObject({ ok: true, exitCode: 0 })
+
+    expect(splitCalls.at(-1)?.handle).toBe('leader-handle-reminted')
+    expect(api.resolveHandleForPaneKey).toHaveBeenCalledWith('tab-1:leader-leaf')
+  })
+
+  it('re-resolves a stale teammate handle through its paneKey instead of failing send-keys', async () => {
+    const { service, teamId, token, leaderPane, api, staleHandles, handleByPaneKey } =
+      createServiceWithLeader()
+    const request = (argv: string[]) =>
+      service.handleTmuxCompat({ teamId, token, envPane: leaderPane, argv }, api)
+
+    await request(['split-window', '-t', leaderPane, '-h', '-l', '70%', '-P', '-F', '#{pane_id}'])
+
+    // Simulate a runtime handle remint on the teammate pane created above.
+    staleHandles.add('teammate-1')
+    handleByPaneKey.set('tab-1:teammate-leaf-1', 'teammate-1-reminted')
+
+    const sendResult = request(['send-keys', '-t', '%2', 'hello', 'Enter'])
+    await expect(sendResult).resolves.toMatchObject({ ok: true, exitCode: 0 })
+    expect(api.sendTerminal).toHaveBeenLastCalledWith(
+      'teammate-1-reminted',
+      expect.objectContaining({ text: expect.any(String) })
+    )
+  })
+
+  it('fails normally when a stale handle has no paneKey to recover through', async () => {
+    const { service, teamId, token, leaderPane, api, staleHandles } = createServiceWithLeader()
+    const request = (argv: string[]) =>
+      service.handleTmuxCompat({ teamId, token, envPane: leaderPane, argv }, api)
+
+    staleHandles.add('leader-handle')
+    // No replacement registered under the leader's paneKey: resolution fails.
+
+    await expect(
+      request(['split-window', '-t', leaderPane, '-h', '-l', '70%', '-P', '-F', '#{pane_id}'])
+    ).resolves.toMatchObject({ ok: false, exitCode: 1 })
   })
 })
