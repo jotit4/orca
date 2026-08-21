@@ -25514,6 +25514,7 @@ export class OrcaRuntimeService {
           claudeAgentTeamsMode
         )
         let agentTeamsPlan: Awaited<ReturnType<typeof buildClaudeAgentTeamsLaunchPlan>> | undefined
+        const agentTeamsPaneShell = this.resolveClaudeAgentTeamsPaneShell()
         try {
           agentTeamsPlan = adoptedBeforeLaunch
             ? undefined
@@ -25524,7 +25525,7 @@ export class OrcaRuntimeService {
                   ...process.env,
                   ...baseEnv
                 },
-                paneShell: this.resolveClaudeAgentTeamsPaneShell(),
+                paneShell: agentTeamsPaneShell,
                 createTeamEnv: (shimDir, shimBin) =>
                   this.claudeAgentTeams.createLaunchEnv({
                     leaderHandle: preAllocatedHandle,
@@ -25538,7 +25539,7 @@ export class OrcaRuntimeService {
                     },
                     shimDir,
                     shimBin,
-                    paneShell: this.resolveClaudeAgentTeamsPaneShell()
+                    paneShell: agentTeamsPaneShell
                   }).env
               })
         } catch (error) {
