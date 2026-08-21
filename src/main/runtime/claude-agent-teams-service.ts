@@ -3,6 +3,10 @@ import { splitTmuxCommand } from '../../shared/claude-agent-teams-tmux-compat'
 import { forgetPane } from './claude-agent-teams-pane-layout'
 import { ClaudeAgentTeamsTmuxDispatcher } from './claude-agent-teams-tmux-dispatcher'
 import { resolvePathEnvKey } from '../pty/windows-environment-path'
+import {
+  resolveStartupShell,
+  type AgentStartupShell
+} from '../../shared/tui-agent-startup-shell'
 import type {
   AgentTeam,
   AgentTeamsLaunchEnv,
@@ -31,6 +35,8 @@ export class ClaudeAgentTeamsService {
     baseEnv: Record<string, string | undefined>
     shimDir: string
     shimBin: string
+    /** Shell the teammate panes will type into; defaults to the platform's. */
+    paneShell?: AgentStartupShell
   }): AgentTeamsLaunchEnv {
     const teamId = `team-${randomUUID()}`
     const token = randomBytes(32).toString('base64url')
@@ -72,6 +78,7 @@ export class ClaudeAgentTeamsService {
       token,
       leaderPane,
       leaderHandle: args.leaderHandle,
+      paneShell: resolveStartupShell(process.platform, args.paneShell),
       sessionName: 'orca',
       windowIndex: '0',
       tmuxValue,

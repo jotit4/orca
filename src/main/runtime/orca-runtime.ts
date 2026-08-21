@@ -436,6 +436,7 @@ import {
   resolveTuiAgentLaunchEnv
 } from '../../shared/tui-agent-launch-defaults'
 import { resolveLocalWindowsAgentStartupShell } from '../../shared/windows-terminal-shell'
+import type { AgentStartupShell } from '../../shared/tui-agent-startup-shell'
 import {
   getTuiAgentLaunchCommand,
   isTuiAgent,
@@ -25523,6 +25524,7 @@ export class OrcaRuntimeService {
                   ...process.env,
                   ...baseEnv
                 },
+                paneShell: this.resolveClaudeAgentTeamsPaneShell(),
                 createTeamEnv: (shimDir, shimBin) =>
                   this.claudeAgentTeams.createLaunchEnv({
                     leaderHandle: preAllocatedHandle,
@@ -25535,7 +25537,8 @@ export class OrcaRuntimeService {
                       ...baseEnv
                     },
                     shimDir,
-                    shimBin
+                    shimBin,
+                    paneShell: this.resolveClaudeAgentTeamsPaneShell()
                   }).env
               })
         } catch (error) {
@@ -27440,7 +27443,17 @@ export class OrcaRuntimeService {
       leaderPaneKey: this.getPaneKeyForTerminalHandle(args.handle) ?? undefined,
       baseEnv,
       shimDir,
-      shimBin
+      shimBin,
+      paneShell: this.resolveClaudeAgentTeamsPaneShell()
+    })
+  }
+
+  /** Teammate panes launch on the local host, so the local Windows shell preference decides their grammar. */
+  private resolveClaudeAgentTeamsPaneShell(): AgentStartupShell | undefined {
+    return resolveLocalWindowsAgentStartupShell({
+      platform: process.platform,
+      isRemote: false,
+      terminalWindowsShell: this.store?.getSettings?.().terminalWindowsShell ?? null
     })
   }
 

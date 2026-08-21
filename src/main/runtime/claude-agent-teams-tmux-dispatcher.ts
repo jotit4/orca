@@ -4,6 +4,7 @@ import {
   tmuxSendKeysText,
   tmuxValue
 } from '../../shared/claude-agent-teams-tmux-compat'
+import { claudeAgentTeamsPaneCommand } from '../../shared/claude-agent-teams-pane-command'
 import {
   forgetPane,
   formatContext,
@@ -118,7 +119,7 @@ export class ClaudeAgentTeamsTmuxDispatcher {
     const split = await withLiveHandle(splitTarget.pane, api, (handle) =>
       api.splitTerminal(handle, {
         direction: splitTarget.direction,
-        command: parsed.positional.join(' ') || undefined,
+        command: claudeAgentTeamsPaneCommand(parsed.positional.join(' '), team.paneShell),
         env: paneEnv(team, fakePaneId),
         envToDelete: ['TERM_PROGRAM', 'ORCA_ATTRIBUTION_SHIM_DIR'],
         activate: false
@@ -179,7 +180,7 @@ export class ClaudeAgentTeamsTmuxDispatcher {
     const split = await withLiveHandle(origin, api, (handle) =>
       api.splitTerminal(handle, {
         direction: pane.splitDirection ?? 'horizontal',
-        command,
+        command: claudeAgentTeamsPaneCommand(command, team.paneShell),
         env: paneEnv(team, pane.fakePaneId),
         envToDelete: ['TERM_PROGRAM', 'ORCA_ATTRIBUTION_SHIM_DIR'],
         activate: false
