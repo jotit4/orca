@@ -56,6 +56,19 @@ export type AgentTeamsTerminalApi = {
   // `terminal_handle_stale` for the rest of the session.
   resolvePaneKeyForHandle(handle: string): string | null
   resolveHandleForPaneKey(paneKey: string): string | null
+  // Why: fires once a teammate pane is carrying its REAL launch command (not
+  // the `cat` holding placeholder) so orchestration can auto-attach it to any
+  // Run bound to the leader's pane, without the dispatcher itself depending on
+  // OrchestrationDb/RPC internals. Optional so tests that don't care about
+  // orchestration can omit it. MUST be synchronous and MUST NOT throw or block
+  // — the dispatcher calls it best-effort and the caller (orca-runtime.ts) is
+  // responsible for making the real work fire-and-forget.
+  autoAttachTeammate?: (info: {
+    leaderHandle: string
+    leaderPaneKey?: string
+    teammateHandle: string
+    launchCommand: string
+  }) => void
 }
 
 export type TeamPane = {

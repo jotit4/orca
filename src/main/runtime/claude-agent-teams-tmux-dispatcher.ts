@@ -137,6 +137,11 @@ export class ClaudeAgentTeamsTmuxDispatcher {
     team.panes.set(fakePaneId, pane)
     team.paneOrder.push(fakePaneId)
     updateMainVerticalAfterSplit(team, fakePaneId, splitTarget)
+    // Why: covers the (rare) single-step launch where the real teammate
+    // command rides straight on split-window instead of the two-step
+    // cat-then-respawn dance (see respawnPane below, which is the common
+    // path and where this same notification also fires).
+    this.notifyTeammateLaunch(team, split.handle, parsed.positional.join(' ') || '', api)
     if (!parsed.flags.has('-P')) {
       return ''
     }
@@ -194,7 +199,43 @@ export class ClaudeAgentTeamsTmuxDispatcher {
     // Why (#11739): respawn mints a new terminal, so the identity behind
     // `handle` changes too — refresh it alongside the handle.
     pane.paneKey = api.resolvePaneKeyForHandle(split.handle) ?? pane.paneKey
+    // Why: this is the moment the pane actually starts running the real
+    // teammate command (the split above only replaced the `cat` holding
+    // pane) — the point where auto-attach has a real launch command to read.
+    this.notifyTeammateLaunch(team, split.handle, command, api)
     return ''
+  }
+
+  // Why: single choke point for both launch shapes (split-window carrying the
+  // real command directly, and the cat-then-respawn-pane two-step) so
+  // auto-attach fires exactly where a real (non-placeholder) command is known.
+  // Never lets a synchronous throw from the callback escape into the tmux
+  // compat response the real pane depends on.
+  private notifyTeammateLaunch(
+    team: AgentTeam,
+    teammateHandle: string,
+    command: string,
+    api: AgentTeamsTerminalApi
+  ): void {
+    if (!command || command === 'cat' || !api.autoAttachTeammate) {
+      return
+    }
+    const leader = team.panes.get(team.leaderPane)
+    if (!leader) {
+      return
+    }
+    try {
+      api.autoAttachTeammate({
+        leaderHandle: leader.handle,
+        leaderPaneKey: leader.paneKey,
+        teammateHandle,
+        launchCommand: command
+      })
+    } catch {
+      // Why: a synchronous throw here must never fail the tmux compat call
+      // the real teammate pane depends on (see the interface contract in
+      // claude-agent-teams-types.ts).
+    }
   }
 
   private selectLayout(team: AgentTeam, args: string[], envPane: string): string {

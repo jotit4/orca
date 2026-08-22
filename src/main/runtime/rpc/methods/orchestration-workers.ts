@@ -1,10 +1,10 @@
 import type { TuiAgent } from '../../../../shared/types'
 import { buildDispatchPreamble } from '../../orchestration/preamble'
 import { OrchestrationError } from '../../orchestration/orchestration-error'
-import { defineMethod, type RpcMethod } from '../core'
+import { defineMethod, type RpcContext, type RpcMethod } from '../core'
 import { startFederatedWorker } from './orchestration-federated-worker-start'
 import { assertOrchestrationWorktreeCreationSupported } from './orchestration-folder-worktree-placement'
-import { WorkerStartParams } from './orchestration-worker-start-schema'
+import { WorkerStartParams, type WorkerStartInput } from './orchestration-worker-start-schema'
 import {
   createExistingWorktreeWorkerTerminal,
   createWorkerWorktree,
@@ -21,12 +21,14 @@ import {
 import { failWorkerStartWithReceipt } from './orchestration-worker-start-receipt'
 import { prepareLocalWorkerStart } from './orchestration-worker-start-validation'
 
-export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
-  defineMethod({
-    name: 'orchestration.workerStart',
-    params: WorkerStartParams,
-    handler: async (params, { runtime, orchestrationMutation }) => {
-      const db = runtime.getOrchestrationDb()
+// Why: factored out of the `orchestration.workerStart` RpcMethod so
+// `autoAttachTeammateToRun` (orchestration/auto-attach-teammate.ts) can reuse
+// the exact same --terminal readiness/dispatch/preamble path when a teammate
+// pane is born under a bound Run, instead of re-implementing it. The RPC
+// method below is now a thin wrapper.
+export async function runWorkerStart(params: WorkerStartInput, ctx: RpcContext): Promise<unknown> {
+  const { runtime, orchestrationMutation } = ctx
+  const db = runtime.getOrchestrationDb()
       const coordinatorPane = runtime.getTerminalPaneKey(params.from)
       const run = coordinatorPane ? db.getCurrentRunForPane(coordinatorPane) : undefined
       if (!run || (params.run && params.run !== run.id)) {
@@ -279,6 +281,12 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
           launch: launch.receipt
         })
       }
-    }
+}
+
+export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
+  defineMethod({
+    name: 'orchestration.workerStart',
+    params: WorkerStartParams,
+    handler: (params, ctx) => runWorkerStart(params, ctx)
   })
 ]

@@ -116,6 +116,7 @@ import { mkdir, readFile, readdir, rm, stat } from 'node:fs/promises'
 import { resolveWorktreeCreateBase } from '../worktree-create-base'
 import { resolveWorktreeAddBaseRef } from '../../shared/worktree-base-ref'
 import { OrchestrationDb } from './orchestration/db'
+import { autoAttachTeammateToRun } from './orchestration/auto-attach-teammate'
 import { reconcileRequestedWorkerTerminalReleases } from './orchestration/worker-terminal-release-reconciliation'
 import { rollbackWorkspaceSessionAfterFailedAsyncWrite } from './workspace-session-failed-write-rollback'
 import { OrchestrationError } from './orchestration/orchestration-error'
@@ -27346,7 +27347,17 @@ export class OrcaRuntimeService {
       // orchestration path already uses (PR #7514) so the shim dispatcher can
       // recover from a stale cached handle instead of failing outright.
       resolvePaneKeyForHandle: (handle) => this.getPaneKeyForTerminalHandle(handle),
-      resolveHandleForPaneKey: (paneKey) => this.getTerminalHandleForPaneKey(paneKey)
+      resolveHandleForPaneKey: (paneKey) => this.getTerminalHandleForPaneKey(paneKey),
+      // Why: fire-and-forget on purpose — auto-attach can take up to the
+      // readiness timeout (~90s) and must never delay or fail the tmux compat
+      // response the real teammate pane is waiting on. autoAttachTeammateToRun
+      // already catches everything internally; the extra .catch here is a
+      // last-resort net against an unhandled rejection escaping this callback.
+      autoAttachTeammate: (info) => {
+        void autoAttachTeammateToRun(this, info).catch((error) => {
+          console.warn('[orchestration] auto-attach teammate failed', error)
+        })
+      }
     })
   }
 

@@ -253,6 +253,65 @@ describe('ClaudeAgentTeamsService', () => {
     expect(api.closeTerminal).toHaveBeenCalledWith('teammate-1')
   })
 
+  // Why: auto-dispatch (orchestration/auto-attach-teammate.ts) must only fire
+  // once a teammate pane is running its REAL command — never for the `cat`
+  // holding pane Claude Code splits first (see the "relaunches a teammate"
+  // test above for that two-step sequence).
+  it('notifies autoAttachTeammate with the real command from respawn-pane, not the cat placeholder split', async () => {
+    const { service, teamId, token, leaderPane, api } = createServiceWithLeader()
+    api.autoAttachTeammate = vi.fn()
+    const request = (argv: string[], envPane = leaderPane) =>
+      service.handleTmuxCompat({ teamId, token, envPane, argv }, api)
+
+    await request([
+      'split-window',
+      '-d',
+      '-t',
+      leaderPane,
+      '-h',
+      '-P',
+      '-F',
+      '#{pane_id}',
+      '--',
+      'cat'
+    ])
+    expect(api.autoAttachTeammate).not.toHaveBeenCalled()
+
+    const teammateCommand = 'cd /repo && env CLAUDECODE=1 claude --agent-id a --teammate-mode auto'
+    await request(['respawn-pane', '-k', '-t', '%2', '--', teammateCommand])
+
+    expect(api.autoAttachTeammate).toHaveBeenCalledTimes(1)
+    expect(api.autoAttachTeammate).toHaveBeenCalledWith({
+      leaderHandle: 'leader-handle',
+      leaderPaneKey: 'tab-1:leader-leaf',
+      teammateHandle: 'teammate-2',
+      launchCommand: teammateCommand
+    })
+  })
+
+  it('does not fail respawn-pane (or the shim response) when autoAttachTeammate throws synchronously', async () => {
+    const { service, teamId, token, leaderPane, api } = createServiceWithLeader()
+    api.autoAttachTeammate = vi.fn(() => {
+      throw new Error('boom: auto-attach must never break the shim call')
+    })
+    const request = (argv: string[], envPane = leaderPane) =>
+      service.handleTmuxCompat({ teamId, token, envPane, argv }, api)
+
+    await request(['split-window', '-d', '-t', leaderPane, '-h', '-P', '-F', '#{pane_id}', '--', 'cat'])
+
+    await expect(
+      request([
+        'respawn-pane',
+        '-k',
+        '-t',
+        '%2',
+        '--',
+        'cd /repo && env CLAUDECODE=1 claude --agent-id a --teammate-mode auto'
+      ])
+    ).resolves.toMatchObject({ ok: true, exitCode: 0 })
+    expect(api.autoAttachTeammate).toHaveBeenCalledTimes(1)
+  })
+
   it('refuses to respawn the leader pane', async () => {
     const { service, teamId, token, leaderPane, api } = createServiceWithLeader()
 
