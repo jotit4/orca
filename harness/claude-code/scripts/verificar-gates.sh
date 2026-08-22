@@ -54,8 +54,11 @@ def iso_a_epoch(s):
 ult_tool = ult_user = None
 try:
     with open(os.environ["TRANSCRIPT"], "rb") as f:
-        f.seek(0, 2); tam = f.tell(); f.seek(max(0, tam - 400_000))
+        # Transcript entero: los prompts del usuario son pocos y pueden quedar lejos del final en
+        # tandas largas; acotar a la cola inventaba una referencia y daba falsos "NO CORRIÓ".
         for linea in f.read().decode("utf-8", "ignore").splitlines():
+            if '"type":"user"' not in linea and '"type": "user"' not in linea and "tool_use" not in linea:
+                continue
             try: j = json.loads(linea)
             except Exception: continue
             ts = iso_a_epoch(j.get("timestamp") or "")
@@ -71,7 +74,7 @@ try:
 except Exception:
     pass
 ahora = time.time()
-ref = {"PreToolUse": ult_tool, "PostToolUse": ult_tool, "UserPromptSubmit": ult_user or ahora, "manual": ahora}
+ref = {"PreToolUse": ult_tool, "PostToolUse": ult_tool, "UserPromptSubmit": ult_user, "manual": ahora}
 
 fallos, ok, sin_chequeo = [], [], []
 for linea in open(os.environ["MANIFEST"], encoding="utf-8"):
