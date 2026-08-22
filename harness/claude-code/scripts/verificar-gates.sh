@@ -64,7 +64,9 @@ try:
             c = m.get("content")
             if j.get("type") == "assistant" and isinstance(c, list) and any(x.get("type") == "tool_use" for x in c if isinstance(x, dict)):
                 ult_tool = max(ult_tool or 0, ts)
-            if j.get("type") == "user" and isinstance(c, str):
+            # Sólo prompts reales: las notificaciones de tareas en segundo plano, de sistema y de
+            # teammates también se guardan como entradas "user" y NO disparan UserPromptSubmit.
+            if j.get("type") == "user" and isinstance(c, str) and not c.lstrip().startswith(("[SYSTEM NOTIFICATION", "<task-notification>", "<teammate-message", "<system-reminder")):
                 ult_user = max(ult_user or 0, ts)
 except Exception:
     pass
