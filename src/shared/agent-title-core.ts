@@ -12,6 +12,16 @@ export { AGY_AGENT_NAME_RE, DROID_AGENT_NAME_RE, HERMES_AGENT_NAME_RE, titleHasA
 export type AgentStatus = 'working' | 'permission' | 'idle'
 
 export const CLAUDE_IDLE = '\u2733' // ✳
+// Why: Claude Code's subagent panes (Explore, general-purpose, ...) rotate a
+// spinner glyph in the OSC title while working -- distinct from the idle
+// prefix above. Before this, only the idle glyph was recognized, so a
+// subagent pane that hadn't gone idle yet classified as 'neutral' and
+// orchestration attach (isTerminalRunningAgent) refused to see it as an
+// agent. Conservative: glyph + space prefix only, never "contains", so task
+// text that merely mentions these characters can't masquerade as a working
+// title.
+const CLAUDE_WORKING_SPINNER_GLYPHS = '\u25d0\u25d1\u25d2\u25d3\u2736\u273b\u273d' // ◐◑◒◓✶✻✽
+export const CLAUDE_WORKING_PREFIX_RE = new RegExp(`^[${CLAUDE_WORKING_SPINNER_GLYPHS}] `)
 const CLAUDE_COMMAND_RE = String.raw`(?:.*[\\/])?claude(?:\.(?:exe|cmd|bat|ps1))?`
 export const CLAUDE_MANAGEMENT_TITLE_RE = new RegExp(
   String.raw`^\s*(?:"${CLAUDE_COMMAND_RE}"|'${CLAUDE_COMMAND_RE}'|${CLAUDE_COMMAND_RE})\s+agents\s*$`,

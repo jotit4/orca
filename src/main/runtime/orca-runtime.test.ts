@@ -23489,6 +23489,78 @@ describe('OrcaRuntimeService', () => {
     await expect(runtime.isTerminalRunningAgent(terminal.handle)).resolves.toBe(false)
   })
 
+  // Why: attaching to an existing pane (worker-start --terminal, dispatch
+  // --inject) used to run isTerminalRunningAgent exactly once, so a subagent
+  // pane still mid-task at that instant failed attach outright even though it
+  // was a real, live agent. waitForTerminalAgent polls instead.
+  describe('waitForTerminalAgent', () => {
+    it('resolves recognized once isTerminalRunningAgent starts returning true, before the timeout', async () => {
+      vi.useFakeTimers()
+      try {
+        const runtime = createRuntime()
+        let calls = 0
+        const check = vi
+          .spyOn(runtime, 'isTerminalRunningAgent')
+          .mockImplementation(async () => {
+            calls += 1
+            return calls >= 3
+          })
+
+        const resultPromise = runtime.waitForTerminalAgent('term-1', {
+          timeoutMs: 5_000,
+          intervalMs: 100
+        })
+        await vi.advanceTimersByTimeAsync(200)
+        const result = await resultPromise
+
+        expect(result.recognized).toBe(true)
+        expect(check).toHaveBeenCalledTimes(3)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('gives up and reports not-recognized once the timeout elapses', async () => {
+      vi.useFakeTimers()
+      try {
+        const runtime = createRuntime()
+        vi.spyOn(runtime, 'isTerminalRunningAgent').mockResolvedValue(false)
+
+        const resultPromise = runtime.waitForTerminalAgent('term-1', {
+          timeoutMs: 300,
+          intervalMs: 100
+        })
+        await vi.advanceTimersByTimeAsync(400)
+        const result = await resultPromise
+
+        expect(result.recognized).toBe(false)
+        expect(result.waitedMs).toBeGreaterThanOrEqual(300)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('defaults to a single immediate check when no timeoutMs is given, matching the prior single-check behavior', async () => {
+      const runtime = createRuntime()
+      const check = vi.spyOn(runtime, 'isTerminalRunningAgent').mockResolvedValue(false)
+
+      const result = await runtime.waitForTerminalAgent('term-1')
+
+      expect(result.recognized).toBe(false)
+      expect(check).toHaveBeenCalledTimes(1)
+    })
+
+    it('skips the wait entirely when already recognized on the first check', async () => {
+      const runtime = createRuntime()
+      const check = vi.spyOn(runtime, 'isTerminalRunningAgent').mockResolvedValue(true)
+
+      const result = await runtime.waitForTerminalAgent('term-1', { timeoutMs: 60_000 })
+
+      expect(result.recognized).toBe(true)
+      expect(check).toHaveBeenCalledTimes(1)
+    })
+  })
+
   it('keeps mobile terminal surfaces visible while their leaf handle is pending', async () => {
     const runtime = new OrcaRuntimeService(store)
     runtime.attachWindow(1)

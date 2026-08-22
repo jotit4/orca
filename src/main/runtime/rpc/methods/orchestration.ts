@@ -200,7 +200,10 @@ const DispatchParams = z.object({
   dryRun: OptionalBoolean,
   returnPreamble: OptionalBoolean,
   devMode: OptionalBoolean,
-  run: OptionalString
+  run: OptionalString,
+  // Why: opt-in poll budget for --inject's agent-recognition check (default 0
+  // = the pre-existing single-check behavior). See waitForTerminalAgent.
+  waitForAgentMs: OptionalFiniteNumber
 })
 
 const DispatchShowParams = z.object({
@@ -1255,12 +1258,20 @@ export const ORCHESTRATION_METHODS: RpcMethod[] = [
 
       // Why: injecting the preamble into a bare shell dumps it as shell commands (gibberish), so require a detected agent first.
       if (params.inject) {
-        const hasAgent = await runtime.isTerminalRunningAgent(to)
-        if (!hasAgent) {
+        // Why: default 0 preserves the prior single-check behavior exactly --
+        // dispatch --inject only gets the wait when a caller opts in via
+        // --wait-for-agent-ms, since a bare dispatch is not expected to block
+        // on an unattended terminal the way worker-start's own timeoutMs does.
+        const agentReadiness = await runtime.waitForTerminalAgent(to, {
+          timeoutMs: params.waitForAgentMs ?? 0
+        })
+        if (!agentReadiness.recognized) {
           throw new Error(
-            `Cannot dispatch --inject to terminal ${to}: no recognized agent detected. ` +
+            `Cannot dispatch --inject to terminal ${to}: no recognized agent detected ` +
+              `(waited ${agentReadiness.waitedMs}ms). ` +
               'Start an agent CLI (e.g. claude, codex, gemini, droid, cursor) in the terminal first, ' +
-              'or dispatch without --inject and send the prompt manually.'
+              'or dispatch without --inject and send the prompt manually, ' +
+              'or pass --wait-for-agent-ms to wait longer for it to become ready.'
           )
         }
       }

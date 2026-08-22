@@ -202,6 +202,29 @@ function comparablePath(token: string): string {
     .toLowerCase()
 }
 
+// Why: Claude Code's installed binary is a per-version file literally named
+// "<major>.<minor>.<patch>" (e.g. ~/.local/share/claude/versions/2.1.240), so
+// its bare foreground process name carries no product token at all --
+// normalizeProcessName strips the directory and a pure version number never
+// matches the "claude" entry in PROCESS_TO_AGENT. A pure semver alone proves
+// nothing (any process could coincidentally be named that), so this only
+// recognizes it once the full path corroborates the install location by
+// containing "claude/versions/" right before the version-numbered basename.
+const CLAUDE_VERSIONED_BINARY_PATH_RE = /(?:^|\/)claude\/versions\/[^/]+$/
+const PURE_SEMVER_RE = /^\d+\.\d+\.\d+$/
+
+function recognizeClaudeVersionedBinary(token: string): RecognizedAgentProcess | null {
+  const path = comparablePath(token)
+  // Why: strip a Windows executable suffix (comparablePath keeps it, unlike
+  // normalizeProcessName) before the pure-semver check, so "2.1.240.exe" is
+  // still recognized as the semver "2.1.240".
+  const basename = (path.split('/').pop() ?? '').replace(PROCESS_EXTENSION_RE, '')
+  if (!PURE_SEMVER_RE.test(basename) || !CLAUDE_VERSIONED_BINARY_PATH_RE.test(path)) {
+    return null
+  }
+  return recognizedAgentForProcess('claude')
+}
+
 function recognizeNodeScriptEntrypoint(token: string): RecognizedAgentProcess | null {
   const path = comparablePath(token)
   for (const identity of EXACT_NODE_ENTRYPOINT_IDENTITIES) {
@@ -289,7 +312,7 @@ export function recognizeAgentProcessFromCommandLine(
   const keep = options?.includeHeadlessOneShot === true
   const tokens = tokenizeCommandLine(commandLine)
   const firstNormalized = normalizeProcessName(tokens[0])
-  let direct = recognizeAgentProcess(tokens[0])
+  let direct = recognizeAgentProcess(tokens[0]) ?? recognizeClaudeVersionedBinary(tokens[0])
   // Why: the generic Orca CLI is not an agent; only this subcommand launches its TUI mode.
   if (direct?.agent === 'claude-agent-teams' && tokens[1]?.toLowerCase() !== 'claude-teams') {
     direct = null

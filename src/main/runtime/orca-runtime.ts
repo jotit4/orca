@@ -31386,6 +31386,37 @@ export class OrcaRuntimeService {
     }
   }
 
+  // Why: attaching to an EXISTING pane (worker-start --terminal, dispatch
+  // --inject) used to run isTerminalRunningAgent exactly once and fail
+  // immediately as agent_unconfigured -- unlike the create-a-fresh-terminal
+  // path, which already waits for readiness via waitForTerminal(condition:
+  // 'tui-idle'). A subagent pane that is mid-task (e.g. showing a Claude Code
+  // working-spinner title, or a foreground process the daemon hasn't
+  // resolved yet) failed attach outright even though it was a real agent.
+  // Poll instead of a single check; timeoutMs 0 (the default) preserves the
+  // prior single-check behavior exactly, so callers that don't opt in are
+  // unaffected.
+  async waitForTerminalAgent(
+    handle: string,
+    options?: { timeoutMs?: number; intervalMs?: number; signal?: AbortSignal }
+  ): Promise<{ recognized: boolean; waitedMs: number }> {
+    const timeoutMs =
+      typeof options?.timeoutMs === 'number' && options.timeoutMs > 0 ? options.timeoutMs : 0
+    const intervalMs =
+      typeof options?.intervalMs === 'number' && options.intervalMs > 0 ? options.intervalMs : 500
+    const startedAt = Date.now()
+    for (;;) {
+      if (await this.isTerminalRunningAgent(handle)) {
+        return { recognized: true, waitedMs: Date.now() - startedAt }
+      }
+      const elapsed = Date.now() - startedAt
+      if (elapsed >= timeoutMs || options?.signal?.aborted === true) {
+        return { recognized: false, waitedMs: elapsed }
+      }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(intervalMs, timeoutMs - elapsed)))
+    }
+  }
+
   private async isPtyRunningAgent(
     pty: RuntimePtyWorktreeRecord,
     leaf: RuntimeLeafRecord | null = null

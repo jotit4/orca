@@ -147,10 +147,18 @@ export const ORCHESTRATION_FEDERATION_ATTACH_METHODS: RpcMethod[] = [
                 `Terminal ${terminalHandle} does not belong to worktree ${worktree.id}.`
               )
             }
-            if (!(await runtime.isTerminalRunningAgent(terminalHandle))) {
+            // Why: reuse the same readiness budget the created-terminal path
+            // waits on below (params.timeoutMs ?? 60_000) -- attaching to an
+            // existing pane deserves the same grace for a subagent that is
+            // still mid-task.
+            const agentReadiness = await runtime.waitForTerminalAgent(terminalHandle, {
+              timeoutMs: params.timeoutMs ?? 60_000
+            })
+            if (!agentReadiness.recognized) {
               throw new OrchestrationError(
                 'agent_unconfigured',
-                `Terminal ${terminalHandle} is not running a recognized agent.`
+                `Terminal ${terminalHandle} is not running a recognized agent ` +
+                  `(waited ${agentReadiness.waitedMs}ms).`
               )
             }
             effects.push({

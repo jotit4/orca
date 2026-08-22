@@ -2,6 +2,7 @@ import {
   AGY_AGENT_NAME_RE,
   BRAILLE_SPINNER_RE,
   CLAUDE_IDLE,
+  CLAUDE_WORKING_PREFIX_RE,
   CURSOR_NATIVE_TITLE_LOWER,
   DROID_AGENT_NAME_RE,
   GEMINI_IDLE,
@@ -177,6 +178,9 @@ export function detectAgentStatusFromTitle(title: string): AgentStatus | null {
 
   if (title.startsWith(`${CLAUDE_IDLE} `) || title === CLAUDE_IDLE) {
     return 'idle'
+  }
+  if (CLAUDE_WORKING_PREFIX_RE.test(title)) {
+    return 'working'
   }
   if (isPiTerminalTitle(title)) {
     return 'idle'

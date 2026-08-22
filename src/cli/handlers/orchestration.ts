@@ -1076,6 +1076,7 @@ export const ORCHESTRATION_HANDLERS: Record<string, CommandHandler> = {
       to,
       from,
       inject: flags.has('inject') ? true : undefined,
+      waitForAgentMs: getOptionalPositiveIntegerValueFlag(flags, 'wait-for-agent-ms'),
       dryRun,
       returnPreamble,
       devMode: isDevCliInvocation()

@@ -366,4 +366,43 @@ describe('agent process recognition', () => {
       processName: 'grok-0.2.51'
     })
   })
+
+  describe('Claude Code versioned binary foreground process', () => {
+    it('recognizes a pure-semver basename corroborated by its claude/versions install path', () => {
+      expect(
+        recognizeAgentProcessFromCommandLine(
+          '/home/dev/.local/share/claude/versions/2.1.240 --agent-id explore@session-1 --agent-type Explore'
+        )
+      ).toEqual({ agent: 'claude', processName: 'claude' })
+      expect(
+        recognizeAgentProcessFromCommandLine(
+          String.raw`C:\Users\dev\AppData\Local\claude\versions\2.1.240.exe --agent-id worker`
+        )
+      ).toEqual({ agent: 'claude', processName: 'claude' })
+    })
+
+    it('does not recognize a bare process name (no path) even if it is a pure semver', () => {
+      // Why: recognizeAgentProcess only ever sees a short foreground process
+      // name (no path), so there is nothing to corroborate the install
+      // location with -- a numeric name alone must never resolve to claude.
+      expect(recognizeAgentProcess('2.1.240')).toBeNull()
+      expect(recognizeAgentProcessFromCommandLine('2.1.240 --agent-id explore')).toBeNull()
+    })
+
+    it('does not recognize a pure semver from an unrelated install path', () => {
+      expect(
+        recognizeAgentProcessFromCommandLine('/opt/some-other-tool/versions/2.1.240 --flag')
+      ).toBeNull()
+      expect(recognizeAgentProcessFromCommandLine('/home/dev/claude/2.1.240 --flag')).toBeNull()
+    })
+
+    it('does not recognize a claude/versions path whose basename is not a pure semver', () => {
+      expect(
+        recognizeAgentProcessFromCommandLine('/home/dev/.local/share/claude/versions/latest')
+      ).toBeNull()
+      expect(
+        recognizeAgentProcessFromCommandLine('/home/dev/.local/share/claude/versions/2.1.240-beta')
+      ).toBeNull()
+    })
+  })
 })
