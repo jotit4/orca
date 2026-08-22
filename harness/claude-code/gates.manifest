@@ -1,0 +1,16 @@
+# Manifiesto de gates del entorno de agentes. Lo lee .claude/scripts/verificar-gates.sh.
+# Formato: nombre | disparador | tolerancia_seg | archivo
+#   disparador: evento de hook (PreToolUse, PostToolUse, UserPromptSubmit, …) o "manual".
+#   tolerancia_seg: el marker debe ser más nuevo que (última actividad del disparador − tolerancia);
+#     "-" = sin chequeo de frescura, y entonces la línea DEBE llevar "No runtime invariant: <por qué>".
+# Regla (tomada de deepseek-harness docs/subsystems/invariants.md): todo gate declara frescura o
+# explica por qué no es chequeable. Un gate sin línea acá no existe para el verificador: agregarlo.
+frenar-comandos-destructivos | PreToolUse | 900 | .claude/hooks/frenar-comandos-destructivos.py
+registrar-actividad | PostToolUse | 900 | .claude/hooks/registrar-actividad-agente.sh
+entregar-buzon | PostToolUse | 900 | .claude/scripts/entregar-buzon-orca.sh
+entregar-buzon-prompt | UserPromptSubmit | 900 | .claude/scripts/entregar-buzon-orca.sh
+verificar-gates | UserPromptSubmit | 900 | .claude/scripts/verificar-gates.sh
+enganchar-subagente | PostToolUse | - | .claude/scripts/enganchar-subagente-orquestacion.sh  No runtime invariant: sólo dispara al lanzar un Agent; su resultado se verifica por agente en estado.json (todo agente tiene hook_attempts y phase != provisioning)
+sondear-eventos | SubagentStop | - | .claude/hooks/sondear-eventos-ciclo-vida.sh  No runtime invariant: sondeo de diagnóstico; con panes reales sólo disparan TeammateIdle/SubagentStop y no hay actividad de referencia
+verificar-fix-orca | manual | 86400 | .claude/scripts/verificar-fix-orca.sh
+verificar-perfiles-shell | manual | 86400 | .claude/scripts/verificar-perfiles-shell.sh

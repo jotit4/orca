@@ -1,0 +1,138 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '__PROYECTO__/.claude/scripts/gate.sh' frenar-comandos-destructivos -- python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/frenar-comandos-destructivos.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '__PROYECTO__/.claude/scripts/gate.sh' enganchar-subagente -- bash '__PROYECTO__/.claude/scripts/enganchar-subagente-orquestacion.sh'",
+            "async": true,
+            "timeout": 60,
+            "statusMessage": "Enganchando el subagente a la orquestación…"
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '__PROYECTO__/.claude/scripts/gate.sh' registrar-actividad -- bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/registrar-actividad-agente.sh\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash '__PROYECTO__/.claude/scripts/gate.sh' entregar-buzon -- bash '__PROYECTO__/.claude/scripts/entregar-buzon-orca.sh'",
+            "timeout": 15,
+            "statusMessage": "Entregando el buzón de orquestación…"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '__PROYECTO__/.claude/scripts/gate.sh' entregar-buzon-prompt -- bash '__PROYECTO__/.claude/scripts/entregar-buzon-orca.sh'",
+            "timeout": 15,
+            "statusMessage": "Entregando el buzón de orquestación…"
+          },
+          {
+            "type": "command",
+            "command": "bash '__PROYECTO__/.claude/scripts/gate.sh' verificar-gates -- bash '__PROYECTO__/.claude/scripts/verificar-gates.sh'",
+            "timeout": 10,
+            "statusMessage": "Verificando que los gates del entorno corrieron…"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '__PROYECTO__/.claude/scripts/gate.sh' registrar-actividad -- bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/registrar-actividad-agente.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '__PROYECTO__/.claude/scripts/gate.sh' enganchar-subagente -- bash '__PROYECTO__/.claude/scripts/enganchar-subagente-orquestacion.sh'",
+            "async": true,
+            "timeout": 60,
+            "statusMessage": "Enganchando el subagente a la orquestación…"
+          },
+          {
+            "type": "command",
+            "command": "bash '__PROYECTO__/.claude/scripts/gate.sh' sondear-eventos -- bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/sondear-eventos-ciclo-vida.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '__PROYECTO__/.claude/scripts/gate.sh' sondear-eventos -- bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/sondear-eventos-ciclo-vida.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "TeammateIdle": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '__PROYECTO__/.claude/scripts/gate.sh' sondear-eventos -- bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/sondear-eventos-ciclo-vida.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "TaskCreated": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '__PROYECTO__/.claude/scripts/gate.sh' sondear-eventos -- bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/sondear-eventos-ciclo-vida.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '__PROYECTO__/.claude/scripts/gate.sh' sondear-eventos -- bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/sondear-eventos-ciclo-vida.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
