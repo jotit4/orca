@@ -18,19 +18,26 @@ describe('autoAttachTeammateToRun', () => {
   const worktreeId = 'repo::worktree'
   const launchCommand = 'cd /repo && env CLAUDECODE=1 claude --agent-id a1 --teammate-mode auto'
 
+  // Why: a worker pane's handle can be reminted mid-launch (that is exactly
+  // the bug this fix addresses) -- 'term_worker_reminted' is the fixture's
+  // stand-in for that reminted handle, and it must resolve to the same
+  // worker identity as 'term_worker' everywhere the original handle did.
+  const isWorkerHandle = (handle: string): boolean =>
+    handle === 'term_worker' || handle === 'term_worker_reminted'
+
   function setup(): void {
     db = new OrchestrationDb(':memory:')
     dbOpen = true
     runtime = new OrcaRuntimeService()
     runtime.setOrchestrationDb(db)
     vi.spyOn(runtime, 'getTerminalPaneKey').mockImplementation((handle) =>
-      handle === 'term_coord' ? coordinatorPaneKey : handle === 'term_worker' ? workerPaneKey : null
+      handle === 'term_coord' ? coordinatorPaneKey : isWorkerHandle(handle) ? workerPaneKey : null
     )
     vi.spyOn(runtime, 'getTerminalProcessIncarnation').mockImplementation((handle) =>
-      handle === 'term_worker' ? 'runtime_test:term_worker:1' : null
+      isWorkerHandle(handle) ? 'runtime_test:term_worker:1' : null
     )
     vi.spyOn(runtime, 'getOrchestrationDispatchAuthority').mockImplementation((handle) =>
-      handle === 'term_worker'
+      isWorkerHandle(handle)
         ? ({
             terminalHandle: handle,
             paneKey: workerPaneKey,
@@ -57,6 +64,8 @@ describe('autoAttachTeammateToRun', () => {
       bytesWritten: 1
     })
     vi.spyOn(runtime, 'waitForTerminalAgent').mockResolvedValue({ recognized: true, waitedMs: 10 })
+    vi.spyOn(runtime, 'isTerminalRunningAgent').mockResolvedValue(true)
+    vi.spyOn(runtime, 'getTerminalHandleForPaneKey').mockReturnValue(null)
   }
 
   afterEach(() => {
@@ -121,13 +130,93 @@ describe('autoAttachTeammateToRun', () => {
     expect(db.getActiveDispatchForTerminal('term_worker')).toBeUndefined()
   })
 
-  it('marks the task failed and posts ENGANCHE FALLÓ when readiness never arrives', async () => {
+  it('marks the task failed and posts ENGANCHE FALLÓ with both handles when readiness never arrives', async () => {
     setup()
     const run = bindRun()
-    vi.spyOn(runtime, 'waitForTerminalAgent').mockResolvedValue({
-      recognized: false,
-      waitedMs: 90_000
+    vi.useFakeTimers()
+    try {
+      vi.spyOn(runtime, 'isTerminalRunningAgent').mockResolvedValue(false)
+      vi.spyOn(runtime, 'getTerminalHandleForPaneKey').mockReturnValue('term_worker_live')
+
+      const attach = autoAttachTeammateToRun(runtime, {
+        leaderHandle: 'term_coord',
+        leaderPaneKey: coordinatorPaneKey,
+        teammateHandle: 'term_worker',
+        teammatePaneKey: workerPaneKey,
+        launchCommand
+      })
+      await vi.advanceTimersByTimeAsync(90_000)
+      await attach
+
+      const tasks = db.listTasks({ runId: run.id })
+      expect(tasks).toHaveLength(1)
+      expect(tasks[0].status).toBe('failed')
+      const result = JSON.parse(tasks[0].result ?? '{}')
+      expect(result.reason).toBe('unhooked')
+      // Why: both the handle captured at notify time and the last one the
+      // readiness loop resolved must be in the diagnostic detail -- that's
+      // the whole point of the fix (#22/08 val-par-a incident).
+      expect(result.detail).toContain('term_worker')
+      expect(result.detail).toContain('term_worker_live')
+
+      const messages = db.getRunMailboxHistory(run.id)
+      expect(
+        messages.some(
+          (m) =>
+            m.subject.startsWith('ENGANCHE FALLÓ a1') &&
+            m.subject.includes('term_worker') &&
+            m.subject.includes('term_worker_live')
+        )
+      ).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('re-resolves the live handle when it changes mid-poll and attaches to the new one', async () => {
+    setup()
+    const run = bindRun()
+    let recognizedHandle: string | undefined
+    let call = 0
+    vi.spyOn(runtime, 'getTerminalHandleForPaneKey').mockImplementation((paneKey) =>
+      paneKey === workerPaneKey ? 'term_worker_reminted' : null
+    )
+    vi.spyOn(runtime, 'isTerminalRunningAgent').mockImplementation(async (handle) => {
+      call += 1
+      // Why: simulates the handle only becoming live/recognized on its second
+      // resolution -- the first poll sees the pane before it renders its
+      // title, same as the real ~40s startup slack.
+      if (call < 2) {
+        return false
+      }
+      recognizedHandle = handle
+      return true
     })
+
+    await autoAttachTeammateToRun(runtime, {
+      leaderHandle: 'term_coord',
+      leaderPaneKey: coordinatorPaneKey,
+      teammateHandle: 'term_worker',
+      teammatePaneKey: workerPaneKey,
+      launchCommand
+    })
+
+    expect(recognizedHandle).toBe('term_worker_reminted')
+    const tasks = db.listTasks({ runId: run.id })
+    expect(tasks).toHaveLength(1)
+    expect(tasks[0].status).not.toBe('failed')
+    const dispatch = db.getActiveDispatchForTerminal('term_worker_reminted')
+    expect(dispatch?.run_id).toBe(run.id)
+    const messages = db.getRunMailboxHistory(run.id)
+    expect(messages.some((m) => m.subject.startsWith('ENGANCHADO a1 → term_worker_reminted'))).toBe(
+      true
+    )
+  })
+
+  it('falls back to the fixed handle (pre-fix behavior) when no teammatePaneKey is given', async () => {
+    setup()
+    const run = bindRun()
+    const getHandleSpy = vi.spyOn(runtime, 'getTerminalHandleForPaneKey')
 
     await autoAttachTeammateToRun(runtime, {
       leaderHandle: 'term_coord',
@@ -136,13 +225,11 @@ describe('autoAttachTeammateToRun', () => {
       launchCommand
     })
 
-    const tasks = db.listTasks({ runId: run.id })
-    expect(tasks).toHaveLength(1)
-    expect(tasks[0].status).toBe('failed')
-    expect(JSON.parse(tasks[0].result ?? '{}')).toMatchObject({ reason: 'unhooked' })
-
+    expect(getHandleSpy).not.toHaveBeenCalled()
+    const dispatch = db.getActiveDispatchForTerminal('term_worker')
+    expect(dispatch?.run_id).toBe(run.id)
     const messages = db.getRunMailboxHistory(run.id)
-    expect(messages.some((m) => m.subject.startsWith('ENGANCHE FALLÓ a1'))).toBe(true)
+    expect(messages.some((m) => m.subject.startsWith('ENGANCHADO a1 → term_worker'))).toBe(true)
   })
 
   it('does not duplicate the dispatch on a second notification for the same pane', async () => {

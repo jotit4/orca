@@ -31238,7 +31238,12 @@ export class OrcaRuntimeService {
     return Date.now() - completedAtMs <= AGENT_STATUS_STALE_AFTER_MS ? dispatch : undefined
   }
 
-  private getTerminalHandleForPaneKey(paneKey: string): string | null {
+  // Why: not `private` -- auto-attach-teammate.ts's readiness loop is a free
+  // function (not a class member) that needs to re-resolve a teammate's live
+  // handle from its paneKey on every poll, the same way withLiveHandle and
+  // the tmux-compat api's resolveHandleForPaneKey already do from inside
+  // this class.
+  getTerminalHandleForPaneKey(paneKey: string): string | null {
     const parsed = parsePaneKey(paneKey)
     const leaf = parsed ? this.leaves.get(this.getLeafKey(parsed.tabId, parsed.leafId)) : undefined
     if (leaf?.ptyId && leaf.connected) {

@@ -285,6 +285,7 @@ describe('ClaudeAgentTeamsService', () => {
       leaderHandle: 'leader-handle',
       leaderPaneKey: 'tab-1:leader-leaf',
       teammateHandle: 'teammate-2',
+      teammatePaneKey: 'tab-1:teammate-leaf-2',
       launchCommand: teammateCommand
     })
   })

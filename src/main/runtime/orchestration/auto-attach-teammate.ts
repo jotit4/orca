@@ -4,10 +4,21 @@ import type { WorkerStartInput } from '../rpc/methods/orchestration-worker-start
 
 // Why: readiness budget for a teammate pane that just came up under a bound
 // Run. The pane takes ~40s to render Claude's title after the real launch
-// command starts, so the timeout carries real slack; it governs both
-// runtime.waitForTerminalAgent (agent recognized) and the tui-idle wait
-// inside runWorkerStart (agent ready for input) — see orchestration-workers.ts.
+// command starts, so the timeout carries real slack. This governs ONLY the
+// readiness loop below (agent recognized under a live-resolved handle); the
+// handoff to runWorkerStart afterwards uses its own short budget since
+// recognition was already confirmed.
 const AUTO_ATTACH_READINESS_TIMEOUT_MS = 90_000
+
+// Why: how often the readiness loop re-resolves the teammate's live handle
+// from its paneKey and re-checks isTerminalRunningAgent.
+const AUTO_ATTACH_READINESS_POLL_INTERVAL_MS = 500
+
+// Why: once the readiness loop confirms the agent is recognized, the only
+// thing left for runWorkerStart's own --terminal path to wait on is the
+// (usually instant) tui-idle condition — it must not re-spend the 90s
+// recognition budget on top of what was already spent above.
+const AUTO_ATTACH_HANDOFF_TIMEOUT_MS = 15_000
 
 // Why: identical protocol text to the external hook
 // (harness/claude-code/scripts/enganchar-subagente-orquestacion.sh) so a
@@ -38,7 +49,46 @@ export type AutoAttachTeammateInfo = {
   leaderHandle: string
   leaderPaneKey?: string
   teammateHandle: string
+  // Why: the teammate pane's stable identity. Two teammates launching in
+  // parallel can remint the first one's handle mid-launch (split -> respawn
+  // race on the SAME pane) while `teammateHandle` above still points at the
+  // handle that was live at notify time. When present, the readiness loop
+  // below re-resolves the live handle from this on every poll instead of
+  // trusting the one captured at notify time; when absent (older caller, or
+  // one that could not resolve a paneKey yet) it falls back to the fixed
+  // `teammateHandle`, matching the pre-fix behavior.
+  teammatePaneKey?: string
   launchCommand: string
+}
+
+// Why: isolates the handle-refresh polling loop from the task/dispatch
+// bookkeeping below so both the "still waiting" and "gave up" paths share one
+// implementation. Never throws -- isTerminalRunningAgent already swallows its
+// own errors, and getTerminalHandleForPaneKey returns null on a miss.
+async function waitForReadyTeammateHandle(
+  runtime: OrcaRuntimeService,
+  info: AutoAttachTeammateInfo
+): Promise<{ liveHandle: string; recognized: boolean; waitedMs: number }> {
+  const startedAt = Date.now()
+  let liveHandle = info.teammateHandle
+  for (;;) {
+    liveHandle =
+      (info.teammatePaneKey && runtime.getTerminalHandleForPaneKey(info.teammatePaneKey)) ||
+      info.teammateHandle
+    if (await runtime.isTerminalRunningAgent(liveHandle)) {
+      return { liveHandle, recognized: true, waitedMs: Date.now() - startedAt }
+    }
+    const waitedMs = Date.now() - startedAt
+    if (waitedMs >= AUTO_ATTACH_READINESS_TIMEOUT_MS) {
+      return { liveHandle, recognized: false, waitedMs }
+    }
+    await new Promise((resolve) =>
+      setTimeout(
+        resolve,
+        Math.min(AUTO_ATTACH_READINESS_POLL_INTERVAL_MS, AUTO_ATTACH_READINESS_TIMEOUT_MS - waitedMs)
+      )
+    )
+  }
 }
 
 // Why: called fire-and-forget from orca-runtime.ts's handleAgentTeamsTmuxCompat
@@ -71,20 +121,7 @@ export async function autoAttachTeammateToRun(
       return
     }
 
-    // Why: idempotency (#4 of the spec) -- a second split/respawn notification
-    // for the same pane, or the external hook still racing this same handle,
-    // must not mint a second task+dispatch for it.
-    const existingDispatch = db.getActiveDispatchForTerminal(info.teammateHandle)
-    if (existingDispatch && existingDispatch.run_id === run.id) {
-      return
-    }
-
     const agentLabel = extractAgentLabelFromLaunchCommand(info.launchCommand) ?? info.teammateHandle
-    const task = db.createTask({
-      spec: `${AUTO_ATTACH_TEAMMATE_SPEC} (subagente auto-enganchado al nacer el pane, handle ${info.teammateHandle})`,
-      taskTitle: `teammate ${agentLabel}`,
-      runId: run.id
-    })
 
     const notify = (subject: string, priority: 'normal' | 'high'): void => {
       const message = db.insertMessage({
@@ -98,11 +135,66 @@ export async function autoAttachTeammateToRun(
       runtime.notifyMessageArrived(message.to_handle, message.type)
     }
 
+    // Why: cheap early exit for the common duplicate -- a second split/respawn
+    // notification for a pane that already carries our dispatch. The post-readiness
+    // check below covers the case where the handle got reminted meanwhile.
+    const earlyDispatch = db.getActiveDispatchForTerminal(info.teammateHandle)
+    if (earlyDispatch && earlyDispatch.run_id === run.id) {
+      return
+    }
+
+    // Why: the task is minted BEFORE waiting for readiness so it is visible from the
+    // moment the pane is born (task-list shows "teammate <label>" in `ready`). External
+    // tooling that used to attach panes itself (the Claude Code hook in harness/) keys
+    // off that row to stand down instead of racing this path; minting it only after
+    // the ~40 s recognition window would make it invisible exactly when it matters.
+    const task = db.createTask({
+      spec: `${AUTO_ATTACH_TEAMMATE_SPEC} (subagente auto-enganchado al nacer el pane, handle ${info.teammateHandle})`,
+      taskTitle: `teammate ${agentLabel}`,
+      runId: run.id
+    })
+
+    // Why (handle churn under a parallel launch): a teammate's terminal
+    // HANDLE is routing metadata, not durable identity -- launching two
+    // teammates at once can remint the first one's handle mid-launch
+    // (split -> respawn on the same pane) while the pane itself stays put.
+    // Re-resolve the live handle from the pane's stable paneKey on every
+    // poll instead of trusting the one captured at notify time.
+    const { liveHandle, recognized, waitedMs } = await waitForReadyTeammateHandle(runtime, info)
+
+    if (!recognized) {
+      const handleDetail =
+        liveHandle === info.teammateHandle
+          ? info.teammateHandle
+          : `${info.teammateHandle} (last resolved: ${liveHandle})`
+      const reason = `Terminal ${handleDetail} is not running a recognized agent (waited ${waitedMs}ms).`
+      db.updateTaskStatus(task.id, 'failed', JSON.stringify({ reason: 'unhooked', detail: reason }))
+      notify(`ENGANCHE FALLÓ ${agentLabel}: ${reason}`, 'high')
+      return
+    }
+
+    // Why: idempotency (#4 of the spec) -- a second split/respawn notification
+    // for the same pane, or external tooling that attached this same pane while
+    // we were waiting, must not mint a second dispatch for it. Checked against
+    // the LIVE handle; our own task is then closed as superseded, not left `ready`.
+    const existingDispatch = db.getActiveDispatchForTerminal(liveHandle)
+    if (existingDispatch && existingDispatch.run_id === run.id) {
+      db.updateTaskStatus(
+        task.id,
+        'failed',
+        JSON.stringify({ reason: 'superseded', detail: `dispatch ${existingDispatch.id} already owns ${liveHandle}` })
+      )
+      return
+    }
+
     const workerStartParams: WorkerStartInput = {
       task: task.id,
       from: info.leaderHandle,
-      terminal: info.teammateHandle,
-      timeoutMs: AUTO_ATTACH_READINESS_TIMEOUT_MS
+      terminal: liveHandle,
+      // Why: recognition was already confirmed by the readiness loop above --
+      // this only needs to cover runWorkerStart's tui-idle wait, which is
+      // normally instant once the agent is recognized.
+      timeoutMs: AUTO_ATTACH_HANDOFF_TIMEOUT_MS
     } as WorkerStartInput
 
     let result: unknown
@@ -118,7 +210,7 @@ export async function autoAttachTeammateToRun(
     const state = (result as { state?: unknown } | null)?.state
     const dispatchId = (result as { dispatchId?: unknown } | null)?.dispatchId
     if (state === 'ready' && typeof dispatchId === 'string') {
-      notify(`ENGANCHADO ${agentLabel} → ${info.teammateHandle} (dispatch ${dispatchId})`, 'normal')
+      notify(`ENGANCHADO ${agentLabel} → ${liveHandle} (dispatch ${dispatchId})`, 'normal')
       return
     }
 

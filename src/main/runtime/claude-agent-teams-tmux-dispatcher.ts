@@ -141,7 +141,7 @@ export class ClaudeAgentTeamsTmuxDispatcher {
     // command rides straight on split-window instead of the two-step
     // cat-then-respawn dance (see respawnPane below, which is the common
     // path and where this same notification also fires).
-    this.notifyTeammateLaunch(team, split.handle, parsed.positional.join(' ') || '', api)
+    this.notifyTeammateLaunch(team, split.handle, pane.paneKey, parsed.positional.join(' ') || '', api)
     if (!parsed.flags.has('-P')) {
       return ''
     }
@@ -202,7 +202,7 @@ export class ClaudeAgentTeamsTmuxDispatcher {
     // Why: this is the moment the pane actually starts running the real
     // teammate command (the split above only replaced the `cat` holding
     // pane) — the point where auto-attach has a real launch command to read.
-    this.notifyTeammateLaunch(team, split.handle, command, api)
+    this.notifyTeammateLaunch(team, split.handle, pane.paneKey, command, api)
     return ''
   }
 
@@ -214,6 +214,7 @@ export class ClaudeAgentTeamsTmuxDispatcher {
   private notifyTeammateLaunch(
     team: AgentTeam,
     teammateHandle: string,
+    teammatePaneKey: string | undefined,
     command: string,
     api: AgentTeamsTerminalApi
   ): void {
@@ -229,6 +230,10 @@ export class ClaudeAgentTeamsTmuxDispatcher {
         leaderHandle: leader.handle,
         leaderPaneKey: leader.paneKey,
         teammateHandle,
+        // Why: both call sites already resolve/refresh `pane.paneKey` (via
+        // api.resolvePaneKeyForHandle) right before this call -- no need to
+        // re-resolve it here too.
+        teammatePaneKey,
         launchCommand: command
       })
     } catch {

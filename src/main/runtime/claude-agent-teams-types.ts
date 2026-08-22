@@ -67,6 +67,11 @@ export type AgentTeamsTerminalApi = {
     leaderHandle: string
     leaderPaneKey?: string
     teammateHandle: string
+    // Why: the teammate pane's stable identity, so a readiness loop that
+    // outlives the handle captured at notify time (a parallel launch can
+    // remint it mid-wait) can re-resolve the live handle each poll instead
+    // of waiting on one that may already point at a dead pane.
+    teammatePaneKey?: string
     launchCommand: string
   }) => void
 }
