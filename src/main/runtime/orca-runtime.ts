@@ -2719,6 +2719,9 @@ export class OrcaRuntimeService {
   // Why: concurrent clients sleeping one host workspace must share one physical teardown.
   private terminalSleepByWorktreeId = new Map<string, Promise<RuntimeWorktreeTerminalSleepResult>>()
   private terminalMutationTailByWorktreeId = new Map<string, Promise<void>>()
+  // Why: serializes the leaf-based splitTerminal path per tabId -- see
+  // acquireSplitTerminalSlot for the race it closes.
+  private splitTerminalQueueByTabId = new Map<string, Promise<void>>()
   private terminalSleepStateByWorktreeId = new Map<
     string,
     {
@@ -27215,22 +27218,66 @@ export class OrcaRuntimeService {
     const { leaf } = this.getLiveLeafForHandle(handle)
     const direction = opts.direction ?? 'horizontal'
 
-    // Snapshot current leaf keys so the post-split graph-sync delta reveals the new pane.
-    const leafKeysBefore = new Set<string>()
-    for (const [key, l] of this.leaves) {
-      if (l.tabId === leaf.tabId) {
-        leafKeysBefore.add(key)
+    // Why: two near-simultaneous splits against the same tab (e.g. two Agent
+    // tool calls launching subagents in one Claude Code message, each going
+    // through the tmux-compat shim's split-window) can each snapshot
+    // leafKeysBefore before either's new leaf has landed in this.leaves, so
+    // waitForNewLeafInTab below resolves the SAME first new leaf for both
+    // callers -- two TeamPane records sharing one real pane handle. The
+    // first one's respawn-pane then closes that shared handle out from under
+    // the second. Serialize by tabId so a queued split only takes its
+    // leafKeysBefore photo once the previous split for that tab has settled.
+    const releaseSplitSlot = await this.acquireSplitTerminalSlot(leaf.tabId)
+    try {
+      // Snapshot current leaf keys so the post-split graph-sync delta reveals the new pane.
+      const leafKeysBefore = new Set<string>()
+      for (const [key, l] of this.leaves) {
+        if (l.tabId === leaf.tabId) {
+          leafKeysBefore.add(key)
+        }
       }
+
+      this.notifier?.splitTerminal(leaf.tabId, leaf.paneRuntimeId, {
+        direction,
+        command: opts.command,
+        telemetrySource: opts.telemetrySource
+      })
+
+      const newHandle = await this.waitForNewLeafInTab(leaf.tabId, leafKeysBefore)
+      return { handle: newHandle, tabId: leaf.tabId, paneRuntimeId: leaf.paneRuntimeId }
+    } finally {
+      releaseSplitSlot()
     }
+  }
 
-    this.notifier?.splitTerminal(leaf.tabId, leaf.paneRuntimeId, {
-      direction,
-      command: opts.command,
-      telemetrySource: opts.telemetrySource
+  // Why: a simple per-tabId promise queue (mirrors acquireWorktreeTerminalMutation's
+  // shape) so concurrent leaf-based splitTerminal calls against the same tab run their
+  // snapshot+wait sequentially instead of racing on the same leaf-arrival delta. A
+  // failed/timed-out split still releases its slot (callers always run in a
+  // try/finally), so the queue never wedges, and the map entry is dropped once no
+  // other split is queued behind it so it doesn't leak per tab.
+  private async acquireSplitTerminalSlot(tabId: string): Promise<() => void> {
+    const previous = this.splitTerminalQueueByTabId.get(tabId) ?? Promise.resolve()
+    let releaseCurrent = (): void => {}
+    const current = new Promise<void>((resolve) => {
+      releaseCurrent = resolve
     })
-
-    const newHandle = await this.waitForNewLeafInTab(leaf.tabId, leafKeysBefore)
-    return { handle: newHandle, tabId: leaf.tabId, paneRuntimeId: leaf.paneRuntimeId }
+    const tail = previous.catch(() => {}).then(() => current)
+    this.splitTerminalQueueByTabId.set(tabId, tail)
+    await previous.catch(() => {})
+    let released = false
+    return () => {
+      if (released) {
+        return
+      }
+      released = true
+      releaseCurrent()
+      void tail.finally(() => {
+        if (this.splitTerminalQueueByTabId.get(tabId) === tail) {
+          this.splitTerminalQueueByTabId.delete(tabId)
+        }
+      })
+    }
   }
 
   private async splitPtyBackedTerminal(

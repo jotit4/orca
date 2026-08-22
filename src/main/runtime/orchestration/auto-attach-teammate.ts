@@ -124,7 +124,15 @@ export async function autoAttachTeammateToRun(
     const agentLabel = extractAgentLabelFromLaunchCommand(info.launchCommand) ?? info.teammateHandle
 
     const notify = (subject: string, priority: 'normal' | 'high'): void => {
-      const message = db.insertMessage({
+      // Why: still insert the `status` message so it appears in `orca
+      // orchestration check` and the Run's history, but stop poking the
+      // coordinator's pane about it -- notifyMessageArrived is what types
+      // "You have N orchestration messages. Run `orca orchestration check`."
+      // into the coordinator's terminal on every teammate launch, and the
+      // coordinator already reads these via the PostToolUse hook, not by
+      // being told to go check. Skipping the notify call does not drop the
+      // message; it only silences the redundant pane nudge for it.
+      db.insertMessage({
         runId: run.id,
         from: 'system:auto-attach',
         to: `run:${run.id}`,
@@ -132,7 +140,6 @@ export async function autoAttachTeammateToRun(
         type: 'status',
         priority
       })
-      runtime.notifyMessageArrived(message.to_handle, message.type)
     }
 
     // Why: cheap early exit for the common duplicate -- a second split/respawn

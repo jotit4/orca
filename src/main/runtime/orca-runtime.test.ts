@@ -14705,6 +14705,178 @@ describe('OrcaRuntimeService', () => {
     }
   })
 
+  // Why: regression coverage for the leaf-based splitTerminal race (val-par-a
+  // incident, 22/08) -- two near-simultaneous splits against the same tab each
+  // used to snapshot `this.leaves` before either's new leaf landed, so
+  // waitForNewLeafInTab resolved the SAME first new leaf for both callers. The
+  // fix serializes the leaf-based path per tabId; these tests exercise it
+  // directly against the graph (no PTY spawn involved, so notifier.splitTerminal
+  // -- not the pty-backed spawn path -- is what fires).
+  function setSplitTerminalGraphNotifier(
+    runtime: OrcaRuntimeService,
+    splitTerminal: (
+      tabId: string,
+      paneRuntimeId: number,
+      opts: {
+        direction: 'horizontal' | 'vertical'
+        command?: string
+        telemetrySource?: string
+      }
+    ) => void
+  ): void {
+    runtime.setNotifier({
+      worktreesChanged: vi.fn(),
+      reposChanged: vi.fn(),
+      activateWorktree: vi.fn(),
+      createTerminal: vi.fn(),
+      revealTerminalSession: vi.fn(),
+      splitTerminal,
+      renameTerminal: vi.fn(),
+      focusTerminal: vi.fn(),
+      closeTerminal: vi.fn(),
+      sleepWorktree: vi.fn(),
+      terminalFitOverrideChanged: vi.fn(),
+      terminalDriverChanged: vi.fn()
+    })
+  }
+
+  it('serializes concurrent leaf-based splits on the same tab so each resolves a distinct new leaf', async () => {
+    const runtime = new OrcaRuntimeService(store)
+    const notifierSplitTerminal = vi.fn()
+    setSplitTerminalGraphNotifier(runtime, notifierSplitTerminal)
+
+    const tabId = 'tab-concurrent-split'
+    // Why: getTerminalHandleForPaneKey parses paneKeys as `${tabId}:${uuid}`
+    // (parsePaneKey/isTerminalLeafId) -- non-UUID leaf ids fail to parse.
+    const sourceLeafId = HEADLESS_LEAF_ID
+    const secondLeafId = '22222222-2222-4222-8222-222222222222'
+    const thirdLeafId = '33333333-3333-4333-8333-333333333333'
+    const baseTab = {
+      tabId,
+      worktreeId: TEST_WORKTREE_ID,
+      title: null,
+      activeLeafId: sourceLeafId,
+      layout: null
+    }
+    const sourceLeaf = {
+      tabId,
+      worktreeId: TEST_WORKTREE_ID,
+      leafId: sourceLeafId,
+      paneRuntimeId: 1,
+      ptyId: 'pty-source'
+    }
+    const secondLeaf = {
+      tabId,
+      worktreeId: TEST_WORKTREE_ID,
+      leafId: secondLeafId,
+      paneRuntimeId: 2,
+      ptyId: 'pty-second'
+    }
+    const thirdLeaf = {
+      tabId,
+      worktreeId: TEST_WORKTREE_ID,
+      leafId: thirdLeafId,
+      paneRuntimeId: 3,
+      ptyId: 'pty-third'
+    }
+
+    runtime.attachWindow(1)
+    runtime.syncWindowGraph(1, { tabs: [baseTab], leaves: [sourceLeaf] })
+
+    const sourceHandle = runtime.getTerminalHandleForPaneKey(`${tabId}:${sourceLeafId}`)
+    expect(sourceHandle).toBeTruthy()
+
+    // Two Agent tool calls launching subagents in the same message -- both hit
+    // splitTerminal on the SAME source pane before either resolves.
+    const splitAPromise = runtime.splitTerminal(sourceHandle!, { direction: 'horizontal' })
+    const splitBPromise = runtime.splitTerminal(sourceHandle!, { direction: 'horizontal' })
+
+    await vi.waitFor(() => expect(notifierSplitTerminal).toHaveBeenCalledTimes(1))
+    // Why: if split B were not serialized behind split A, its leafKeysBefore
+    // snapshot would already be taken (excluding secondLeaf too) by this point,
+    // and it would resolve to the SAME leaf as split A once this arrives.
+    runtime.syncWindowGraph(1, { tabs: [baseTab], leaves: [sourceLeaf, secondLeaf] })
+
+    const splitA = await splitAPromise
+
+    // Split B only takes ITS OWN snapshot (which now includes secondLeaf as
+    // pre-existing) once split A has fully settled -- proven by the notifier
+    // call count only reaching 2 after split A resolved above.
+    await vi.waitFor(() => expect(notifierSplitTerminal).toHaveBeenCalledTimes(2))
+    runtime.syncWindowGraph(1, { tabs: [baseTab], leaves: [sourceLeaf, secondLeaf, thirdLeaf] })
+
+    const splitB = await splitBPromise
+
+    expect(splitA.tabId).toBe(tabId)
+    expect(splitB.tabId).toBe(tabId)
+    expect(splitA.handle).not.toBe(splitB.handle)
+    expect(splitA.handle).toBe(runtime.getTerminalHandleForPaneKey(`${tabId}:${secondLeafId}`))
+    expect(splitB.handle).toBe(runtime.getTerminalHandleForPaneKey(`${tabId}:${thirdLeafId}`))
+  })
+
+  it('does not let a first split that times out block a second split on the same tab', async () => {
+    vi.useFakeTimers()
+    try {
+      const runtime = new OrcaRuntimeService(store)
+      const notifierSplitTerminal = vi.fn()
+      setSplitTerminalGraphNotifier(runtime, notifierSplitTerminal)
+
+      const tabId = 'tab-timeout-split'
+      const sourceLeafId = HEADLESS_LEAF_ID
+      const secondLeafId = '22222222-2222-4222-8222-222222222222'
+      const baseTab = {
+        tabId,
+        worktreeId: TEST_WORKTREE_ID,
+        title: null,
+        activeLeafId: sourceLeafId,
+        layout: null
+      }
+      const sourceLeaf = {
+        tabId,
+        worktreeId: TEST_WORKTREE_ID,
+        leafId: sourceLeafId,
+        paneRuntimeId: 1,
+        ptyId: 'pty-source'
+      }
+      const secondLeaf = {
+        tabId,
+        worktreeId: TEST_WORKTREE_ID,
+        leafId: secondLeafId,
+        paneRuntimeId: 2,
+        ptyId: 'pty-second'
+      }
+
+      runtime.attachWindow(1)
+      runtime.syncWindowGraph(1, { tabs: [baseTab], leaves: [sourceLeaf] })
+
+      const sourceHandle = runtime.getTerminalHandleForPaneKey(`${tabId}:${sourceLeafId}`)
+      expect(sourceHandle).toBeTruthy()
+
+      const splitAPromise = runtime.splitTerminal(sourceHandle!, { direction: 'horizontal' })
+      const splitBPromise = runtime.splitTerminal(sourceHandle!, { direction: 'horizontal' })
+      // Why: attach a handler immediately so the eventual rejection (below)
+      // never reports as an unhandled rejection during timer advancement.
+      splitAPromise.catch(() => {})
+
+      // Why: the renderer never answers split A's request -- advance past its
+      // internal 10s timeout so it rejects instead of wedging the queue.
+      await vi.advanceTimersByTimeAsync(10_000)
+      await expect(splitAPromise).rejects.toThrow('Timed out waiting for split pane handle')
+
+      // Split B must already be running its own snapshot+wait, unblocked by
+      // split A's failure -- not left waiting on a queue slot A never released.
+      expect(notifierSplitTerminal).toHaveBeenCalledTimes(2)
+
+      runtime.syncWindowGraph(1, { tabs: [baseTab], leaves: [sourceLeaf, secondLeaf] })
+
+      const splitB = await splitBPromise
+      expect(splitB.tabId).toBe(tabId)
+      expect(splitB.handle).toBe(runtime.getTerminalHandleForPaneKey(`${tabId}:${secondLeafId}`))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('splits folder workspace pty-backed terminal sessions with folder cwd and env', async () => {
     const folderPath = await mkdtemp(join(tmpdir(), 'orca-runtime-folder-split-'))
     const spawn = vi

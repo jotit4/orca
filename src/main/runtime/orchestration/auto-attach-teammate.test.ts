@@ -12,6 +12,7 @@ describe('autoAttachTeammateToRun', () => {
   let db: OrchestrationDb
   let dbOpen = false
   let runtime: OrcaRuntimeService
+  let notifyMessageArrivedSpy: ReturnType<typeof vi.spyOn>
 
   const coordinatorPaneKey = 'tab_coord:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
   const workerPaneKey = 'tab_worker:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
@@ -66,6 +67,12 @@ describe('autoAttachTeammateToRun', () => {
     vi.spyOn(runtime, 'waitForTerminalAgent').mockResolvedValue({ recognized: true, waitedMs: 10 })
     vi.spyOn(runtime, 'isTerminalRunningAgent').mockResolvedValue(true)
     vi.spyOn(runtime, 'getTerminalHandleForPaneKey').mockReturnValue(null)
+    // Why: notify() intentionally stopped calling this (see auto-attach-teammate.ts) --
+    // it was what typed "You have N orchestration messages..." into the coordinator's
+    // pane on every teammate launch, which the coordinator already reads via the
+    // PostToolUse hook. Spied (not mocked away) so tests below can assert it stays
+    // silent while the message itself still lands in the mailbox.
+    notifyMessageArrivedSpy = vi.spyOn(runtime, 'notifyMessageArrived')
   }
 
   afterEach(() => {
@@ -113,6 +120,11 @@ describe('autoAttachTeammateToRun', () => {
 
     const messages = db.getRunMailboxHistory(run.id)
     expect(messages.some((m) => m.subject.startsWith('ENGANCHADO a1 → term_worker'))).toBe(true)
+    // Why: the ENGANCHADO status message must land in the mailbox (asserted
+    // above) without also typing a "you have N messages" nudge into the
+    // coordinator's pane -- the coordinator already reads these via the
+    // PostToolUse hook.
+    expect(notifyMessageArrivedSpy).not.toHaveBeenCalled()
   })
 
   it('does nothing when the leader pane has no Run bound', async () => {
@@ -168,6 +180,7 @@ describe('autoAttachTeammateToRun', () => {
             m.subject.includes('term_worker_live')
         )
       ).toBe(true)
+      expect(notifyMessageArrivedSpy).not.toHaveBeenCalled()
     } finally {
       vi.useRealTimers()
     }
