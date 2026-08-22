@@ -52,6 +52,7 @@ def iso_a_epoch(s):
 
 # --- referencia de actividad desde el transcript (fuente independiente de los hooks)
 ult_tool = ult_user = None
+prompts_user = []
 try:
     with open(os.environ["TRANSCRIPT"], "rb") as f:
         # Transcript entero: los prompts del usuario son pocos y pueden quedar lejos del final en
@@ -70,10 +71,16 @@ try:
             # Sólo prompts reales: las notificaciones de tareas en segundo plano, de sistema y de
             # teammates también se guardan como entradas "user" y NO disparan UserPromptSubmit.
             if j.get("type") == "user" and isinstance(c, str) and not c.lstrip().startswith(("[SYSTEM NOTIFICATION", "<task-notification>", "<teammate-message", "<system-reminder")):
-                ult_user = max(ult_user or 0, ts)
+                prompts_user.append(ts)
 except Exception:
     pass
 ahora = time.time()
+# Why: los hooks de UserPromptSubmit corren en paralelo con este verificador y escriben su marker al
+# terminar; contra el prompt ACTUAL siempre parecerían viejos. La referencia es el prompt anterior.
+prompts_user.sort()
+if prompts_user and ahora - prompts_user[-1] < 120:
+    prompts_user.pop()
+ult_user = prompts_user[-1] if prompts_user else None
 ref = {"PreToolUse": ult_tool, "PostToolUse": ult_tool, "UserPromptSubmit": ult_user, "manual": ahora}
 
 fallos, ok, sin_chequeo = [], [], []
