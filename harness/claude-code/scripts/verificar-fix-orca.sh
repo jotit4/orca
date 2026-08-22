@@ -34,7 +34,8 @@ set -uo pipefail
 #   withLiveHandle          56483dc9   (11/08) re-resolución de handles por paneKey
 #   waitForTerminalAgent    2b5e8565a6 (22/08) readiness al adjuntarse a un pane existente
 #   autoAttachTeammateToRun (22/08) dispatch automático al nacer el pane del teammate
-SIMBOLOS_FIX=(forgetTerminalHandle withLiveHandle waitForTerminalAgent autoAttachTeammateToRun)
+#   waitForReadyTeammateHandle (22/08, 2b) readiness re-resolviendo el handle por paneKey
+SIMBOLOS_FIX=(forgetTerminalHandle withLiveHandle waitForTerminalAgent autoAttachTeammateToRun waitForReadyTeammateHandle)
 SIMBOLO_FIX="${SIMBOLOS_FIX[*]}"
 SIMBOLO_CONTROL="removeTeamForLeaderHandle"
 APPIMAGE_DESCARGADO="$HOME/Descargas/orca-linux.AppImage"

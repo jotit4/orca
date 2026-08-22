@@ -258,8 +258,9 @@ buscar_task_nativa() {
 import json,sys
 try: ts=json.load(sys.stdin)['result']['tasks']
 except Exception: sys.exit(0)
+# Orca titula con --agent-name (sin @session) si existe, y si no con --agent-id: aceptar ambas formas.
 for t in ts:
-    if (t.get('task_title') or '')=='teammate $agent_id': print(t['id'], t.get('status')); break"
+    if (t.get('task_title') or '') in ('teammate $agent_id', 'teammate ${agent_id%%@*}'): print(t['id'], t.get('status')); break"
 }
 nativa=""
 for _ in $(seq 1 10); do
