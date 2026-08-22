@@ -249,6 +249,56 @@ fi
 # Registrar el handle YA, aunque después falle: el siguiente lanzamiento no debe volver a elegir este pane.
 printf '%s\n' "$handle" >> "$enganchados"
 estado_set --set "agent_type=${agent_type}" --set "handle=${handle}" --set "phase=provisioning" --set "run_id=${run_id}"
+# --- Enganche NATIVO (fork de Orca, fix 2 del 22/08): Orca crea sola la task "teammate <agent_id>" y
+# el dispatch al nacer el pane. Si aparece, este hook sólo refleja el resultado en estado.json y NO crea
+# nada (evita dos dispatches sobre el mismo pane). Si no aparece en 10 s, es un Orca sin el fix: sigue
+# el camino propio de abajo.
+buscar_task_nativa() {
+  "$ORCA" orchestration task-list --json 2>/dev/null | python3 -c "
+import json,sys
+try: ts=json.load(sys.stdin)['result']['tasks']
+except Exception: sys.exit(0)
+for t in ts:
+    if (t.get('task_title') or '')=='teammate $agent_id': print(t['id'], t.get('status')); break"
+}
+nativa=""
+for _ in $(seq 1 10); do
+  nativa="$(buscar_task_nativa)"; [ -n "$nativa" ] && break; sleep 1
+done
+if [ -n "$nativa" ]; then
+  task_id="${nativa%% *}"
+  anotar "enganche nativo detectado para ${agent_id}: task ${task_id}; este hook sólo refleja"
+  estado_set --set "task_id=${task_id}" --set "hook_attempt=nativo: task ${task_id} creada por Orca"
+  for _ in $(seq 1 100); do
+    st="$(buscar_task_nativa)"; st="${st#* }"
+    case "$st" in
+      ready|in_progress|dispatched|running)
+        d="$("$ORCA" orchestration worker-list --json 2>/dev/null | python3 -c "
+import json,sys
+try: ws=json.load(sys.stdin)['result']['workers']
+except Exception: sys.exit(0)
+for w in ws:
+    if w.get('taskId')=='$task_id': print(w.get('dispatchId') or '', w.get('workerState') or ''); break")"
+        if [ -n "${d%% *}" ] && [ "${d#* }" = "ready" ]; then
+          printf '%s\t%s\t%s\t%s\n' "$agent_id" "$agent_type" "$handle" "$task_id" >> "$mapa"
+          estado_set --set "dispatch_id=${d%% *}" --set "phase=active" --set "turn=running" --set "hook_attempt=nativo: ready"
+          anotar "enganchado (nativo) ${agent_type}/${agent_id} → ${handle} (task ${task_id}, dispatch ${d%% *})"
+          reportar "🔗 ENGANCHADO (nativo por Orca) ${agent_id} → ${handle} (dispatch ${d%% *}). Su fin real es el worker_done; el buzón lo entrega solo."
+          exit 0
+        fi ;;
+      failed|completed|cancelled)
+        python3 "$ESTADO" --session "$session_id" settle --agent "$agent_id" --reason unhooked >/dev/null 2>&1 || true
+        fallo "enganche nativo terminó en ${st} para ${agent_id} (task ${task_id})"
+        reportar "🔌 ENGANCHE FALLÓ (nativo) ${agent_id}: Orca cerró la task ${task_id} en ${st}. Corre SIN dispatch; verificá su trabajo en disco."
+        exit 0 ;;
+    esac
+    sleep 1
+  done
+  fallo "enganche nativo sin resolver en 100 s para ${agent_id} (task ${task_id})"
+  reportar "⚠ ENGANCHE NATIVO SIN RESOLVER ${agent_id} (task ${task_id}) tras 100 s: consultá worker-list antes de suponer."
+  exit 0
+fi
+
 spec="Seguí exactamente la tarea que ya recibiste en tu prompt inicial — este bloque no la reemplaza ni la modifica. Lo único que agrega es el protocolo de reporte: mandá worker_done cuando termines, heartbeat mientras trabajás, y usá ask (nunca AskUserQuestion) si necesitás una decisión del orquestador. (subagente ${agent_type}, id ${agent_id})"
 
 crear_task() {

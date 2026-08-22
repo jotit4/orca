@@ -29,7 +29,13 @@
 
 set -uo pipefail
 
-SIMBOLO_FIX="forgetTerminalHandle"
+# Un símbolo por fix del fork, en orden cronológico. Todos deben estar para que el veredicto sea ✅.
+#   forgetTerminalHandle    aef3a445b9 (10/08) panes muertos fuera del shim
+#   withLiveHandle          56483dc9   (11/08) re-resolución de handles por paneKey
+#   waitForTerminalAgent    2b5e8565a6 (22/08) readiness al adjuntarse a un pane existente
+#   autoAttachTeammateToRun (22/08) dispatch automático al nacer el pane del teammate
+SIMBOLOS_FIX=(forgetTerminalHandle withLiveHandle waitForTerminalAgent autoAttachTeammateToRun)
+SIMBOLO_FIX="${SIMBOLOS_FIX[*]}"
 SIMBOLO_CONTROL="removeTeamForLeaderHandle"
 APPIMAGE_DESCARGADO="$HOME/Descargas/orca-linux.AppImage"
 
@@ -86,13 +92,16 @@ huboAusente=0
 huboPresente=0
 
 for asar in "${asares[@]}"; do
-  n_fix=$(grep -a -c "$SIMBOLO_FIX" "$asar" 2>/dev/null || true)
   n_control=$(grep -a -c "$SIMBOLO_CONTROL" "$asar" 2>/dev/null || true)
-  n_fix=${n_fix:-0}
   n_control=${n_control:-0}
-
+  n_fix=1; faltan=()
   echo "-- $asar --"
-  echo "   $SIMBOLO_FIX: $n_fix ocurrencia(s)"
+  for simbolo in "${SIMBOLOS_FIX[@]}"; do
+    n=$(grep -a -c "$simbolo" "$asar" 2>/dev/null || true); n=${n:-0}
+    echo "   $simbolo: $n ocurrencia(s)"
+    [[ "$n" -eq 0 ]] && { n_fix=0; faltan+=("$simbolo"); }
+  done
+  [[ ${#faltan[@]} -gt 0 ]] && echo "   faltan: ${faltan[*]}"
   echo "   $SIMBOLO_CONTROL (control de sanidad): $n_control ocurrencia(s)"
 
   if [[ "$n_control" -eq 0 ]]; then
