@@ -50,10 +50,12 @@ process.stdin.on('data', (chunk) => {
     append({ event: 'normal-exit' })
     process.exit(0)
   }
-  if (pasteEnded && input.includes('\\r')) {
-    process.stdout.write('\\u001b]0;Codex Working\\u0007ACK\\n')
+  fakeAgentMaybeAck(pasteEnded, input, (mode) => {
+    append({ event: 'ack', mode })
+    const suffix = mode === 'bracketed' ? '' : ' (unbracketed paste)'
+    process.stdout.write('\\u001b]0;Codex Working\\u0007ACK' + suffix + '\\n')
     setTimeout(() => process.stdout.write('\\u001b]0;Codex Ready\\u0007'), 10)
-  }
+  })
 })
 process.stdin.setRawMode?.(true)
 process.stdin.resume()

@@ -20528,16 +20528,22 @@ describe('OrcaRuntimeService', () => {
     } as unknown as OrchestrationDb)
     const write = vi.fn(() => true)
     const kill = vi.fn(() => true)
-    const serializeProviderBuffer = vi.fn().mockResolvedValue({
-      data: '',
-      scrollbackAnsi:
-        ' >_ OpenAI Codex (v0.131.0)\r\n model:       gpt-5.5 high\r\n directory:   /repo\r\n',
-      cols: 80,
-      rows: 24,
-      seq: 100,
-      source: 'headless' as const,
-      alternateScreen: false
-    })
+    const READY_SCREEN =
+      ' >_ OpenAI Codex (v0.131.0)\r\n model:       gpt-5.5 high\r\n directory:   /repo\r\n'
+    // Why scrollbackRows-aware: a visible-only request gets the grid in `data`;
+    // a scrollback request gets history. Collapsing the two would let a test
+    // pass on evidence the caller never asked for.
+    const serializeProviderBuffer = vi
+      .fn()
+      .mockImplementation(async (_ptyId: string, opts?: { scrollbackRows?: number }) => ({
+        data: opts?.scrollbackRows === 0 ? READY_SCREEN : '',
+        scrollbackAnsi: opts?.scrollbackRows === 0 ? '' : READY_SCREEN,
+        cols: 80,
+        rows: 24,
+        seq: 100,
+        source: 'headless' as const,
+        alternateScreen: false
+      }))
     runtime.setPtyController({
       write,
       kill,
@@ -20621,9 +20627,23 @@ describe('OrcaRuntimeService', () => {
     await expect(
       runtime.waitForTerminal(terminal.handle, { condition: 'tui-idle', timeoutMs: 100 })
     ).resolves.toMatchObject({ satisfied: true })
+    // Why: the ready banner stays in scrollback for the whole session, so a
+    // working grid must not inherit idleness from its own history (#15569 review).
     serializeProviderBuffer.mockResolvedValueOnce({
-      data: '',
-      scrollbackAnsi: 'Do you trust this workspace directory?\r\n1. Yes\r\n2. No\r\n',
+      data: '  working on it (12s)\r\n  Esc to interrupt\r\n',
+      scrollbackAnsi: READY_SCREEN,
+      cols: 80,
+      rows: 24,
+      seq: 101,
+      source: 'headless' as const,
+      alternateScreen: false
+    })
+    await expect(
+      runtime.waitForTerminal(terminal.handle, { condition: 'tui-idle', timeoutMs: 50 })
+    ).rejects.toThrow('timeout')
+    serializeProviderBuffer.mockResolvedValueOnce({
+      data: 'Do you trust this workspace directory?\r\n1. Yes\r\n2. No\r\n',
+      scrollbackAnsi: '',
       cols: 80,
       rows: 24,
       seq: 101,
@@ -20640,9 +20660,9 @@ describe('OrcaRuntimeService', () => {
     await expect(
       runtime.waitForTerminal(terminal.handle, { condition: 'tui-idle', timeoutMs: 50 })
     ).rejects.toThrow('timeout')
-    expect(serializeProviderBuffer).toHaveBeenCalledTimes(4)
+    expect(serializeProviderBuffer).toHaveBeenCalledTimes(5)
     await expect(runtime.readTerminal(terminal.handle)).resolves.toMatchObject({ tail: [] })
-    expect(serializeProviderBuffer).toHaveBeenCalledTimes(4)
+    expect(serializeProviderBuffer).toHaveBeenCalledTimes(5)
     expect(
       runtime.verifyOrchestrationCompatibilityCaller({
         terminalHandle: 'term_legacy',

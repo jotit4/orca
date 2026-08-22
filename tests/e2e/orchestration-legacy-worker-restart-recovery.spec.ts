@@ -24,7 +24,10 @@ import {
 import { DEFAULT_LOCAL_ORCA_PROFILE_ID } from '../../src/shared/orca-profiles'
 import type { RuntimeTerminalListResult, RuntimeTerminalRead } from '../../src/shared/runtime-types'
 import { listAllOrchestrationRuns } from './orchestration-run-pages'
-import { buildFakeAgentCommandOverride } from './helpers/fake-agent-command-override'
+import {
+  buildFakeAgentCommandOverride,
+  FAKE_AGENT_WINDOWS_SHELL
+} from './helpers/fake-agent-command-override'
 import { FAKE_AGENT_PASTE_END_SCANNER_SOURCE } from './helpers/fake-agent-paste-end-scanner'
 
 const PROVIDER_SESSION_ID = 'e2e-legacy-orchestration-worker'
@@ -101,10 +104,13 @@ process.stdin.on('data', (chunk) => {
   if (input.includes('\\x03')) {
     appendLedger('ORCA_E2E_INTERRUPTION_LEDGER', { event: 'stdin-ctrl-c' })
   }
-  if (!acknowledged && pasteEnded && input.includes('\\r')) {
-    acknowledged = true
-    process.stdout.write('\\u001b]0;Codex Working\\u0007ACK\\n')
-    setTimeout(() => process.stdout.write('\\u001b]0;Codex Ready\\u0007'), 10)
+  if (!acknowledged) {
+    fakeAgentMaybeAck(pasteEnded, input, (mode) => {
+      acknowledged = true
+      const suffix = mode === 'bracketed' ? '' : ' (unbracketed paste)'
+      process.stdout.write('\\u001b]0;Codex Working\\u0007ACK' + suffix + '\\n')
+      setTimeout(() => process.stdout.write('\\u001b]0;Codex Ready\\u0007'), 10)
+    })
   }
   const legacyCompletion = input.match(/ORCA_E2E_RUN_LEGACY_DONE:([A-Za-z0-9+/=]+)/)
   if (!lifecycleSent && legacyCompletion) {
@@ -429,11 +435,15 @@ for (const contractVersion of [LEGACY_CONTRACT_VERSION, CURRENT_CONTRACT_VERSION
       firstApp = first.app
       const worktreeId = await attachRepoAndOpenTerminal(first.page, repoPath)
       await waitForSessionReady(first.page)
-      await first.page.evaluate(async (agentCommand) => {
-        await window.__store?.getState().updateSettings({
-          agentCmdOverrides: { codex: agentCommand }
-        })
-      }, fakeCodexCommand)
+      await first.page.evaluate(
+        async ({ agentCommand, terminalWindowsShell }) => {
+          await window.__store?.getState().updateSettings({
+            agentCmdOverrides: { codex: agentCommand },
+            terminalWindowsShell
+          })
+        },
+        { agentCommand: fakeCodexCommand, terminalWindowsShell: FAKE_AGENT_WINDOWS_SHELL }
+      )
       await ensureTerminalVisible(first.page)
       const coordinatorTabId = await getActiveTabId(first.page)
       expect(coordinatorTabId).toBeTruthy()
@@ -535,7 +545,14 @@ for (const contractVersion of [LEGACY_CONTRACT_VERSION, CURRENT_CONTRACT_VERSION
 
       const transcriptPath = session.seedCodexResumeRollout(PROVIDER_SESSION_ID, repoPath)
       await first.page.evaluate(
-        ({ paneKey, tabId, worktreeId: workerWorktreeId, terminalHandle, transcript }) => {
+        ({
+          agentCommand,
+          paneKey,
+          tabId,
+          worktreeId: workerWorktreeId,
+          terminalHandle,
+          transcript
+        }) => {
           window.__store?.getState().setAgentStatus(
             paneKey,
             { state: 'working', prompt: 'Respond ACK and remain idle', agentType: 'codex' },
@@ -549,7 +566,10 @@ for (const contractVersion of [LEGACY_CONTRACT_VERSION, CURRENT_CONTRACT_VERSION
                 transcriptPath: transcript
               },
               launchConfig: {
-                agentCommand: 'codex',
+                // Why not bare 'codex': resume prefers the captured command over
+                // agentCmdOverrides, so a bare name would resolve the machine's real
+                // Codex off PATH and unpin the adoption leg this spec exercises.
+                agentCommand,
                 agentArgs: '--dangerously-bypass-approvals-and-sandbox',
                 agentEnv: {}
               }
@@ -558,6 +578,7 @@ for (const contractVersion of [LEGACY_CONTRACT_VERSION, CURRENT_CONTRACT_VERSION
           window.__store?.getState().captureAllSleepingAgentSessions('quit')
         },
         {
+          agentCommand: fakeCodexCommand,
           paneKey: workerPaneKey,
           tabId: worker!.tabId,
           worktreeId: worker!.worktreeId,

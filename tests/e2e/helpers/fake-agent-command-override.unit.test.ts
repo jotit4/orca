@@ -13,4 +13,16 @@ describe('buildFakeAgentCommandOverride', () => {
       "'/tmp/fake agent'\"'\"'s/codex'"
     )
   })
+
+  it('drops the PowerShell call operator when the Windows host runs cmd', () => {
+    expect(
+      buildFakeAgentCommandOverride('C:\\Temp\\fake agent\\codex.cmd', 'win32', 'cmd.exe')
+    ).toBe('"C:\\Temp\\fake agent\\codex.cmd"')
+  })
+
+  it('uses POSIX quoting when the Windows host runs Git Bash or WSL', () => {
+    expect(buildFakeAgentCommandOverride('/tmp/fake agent/codex', 'win32', 'wsl.exe')).toBe(
+      "'/tmp/fake agent/codex'"
+    )
+  })
 })
