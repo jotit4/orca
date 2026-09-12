@@ -61,6 +61,28 @@ jobs:
           retry_wait_seconds: 30
           command: pnpm install --frozen-lockfile
 
+      # Why: the Agent Teams Windows path has tests that only run on win32 — the
+      # launcher compiled with csc.exe, spawned as tmux.exe, and the shim env
+      # gates — and `pnpm build:release` runs no tests. Run them on the real
+      # Windows host before packaging so the installer never ships untested.
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Windows Agent Teams tests
+        run: >-
+          pnpm exec vitest run --config config/vitest.config.ts
+          config/scripts/build-windows-cli-launcher.test.mjs
+          src/shared/claude-agent-teams-pane-command.test.ts
+          src/main/runtime/claude-agent-teams-shim-env.test.ts
+          src/main/runtime/claude-agent-teams-service.test.ts
+          src/main/runtime/claude-agent-teams-tmux-dispatcher.test.ts
+          src/cli/handlers/core.test.ts
+          src/main/ipc/tui-agent-detection-commands.test.ts
+          src/shared/tui-agent-startup.test.ts
+          src/main/ipc/preflight-agent-detection.test.ts
+          src/shared/windows-terminal-shell.test.ts
+          src/main/providers/local-pty-provider-windows-shell-launch.test.ts
+
       # Why: no ORCA_BUILD_IDENTITY / telemetry key on purpose. This is an
       # unofficial build: telemetry stays off and the updater treats it as such.
       - name: Build app
