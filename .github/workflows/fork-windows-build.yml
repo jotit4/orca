@@ -184,6 +184,29 @@ jobs:
           if (-not (Test-Path -LiteralPath 'out/cli/index.js' -PathType Leaf)) { throw 'out/cli/index.js missing after the E2E build' }
           if (-not (Test-Path -LiteralPath 'native/windows-cli-launcher/.build/orca.exe' -PathType Leaf)) { throw 'launcher missing' }
 
+      # Why: Playwright saw Electron alive for 2 minutes with no window and no
+      # main-process output. Launch the same build by hand with Chromium logging
+      # to see where startup stalls before any spec runs.
+      - name: Startup diagnostic (Electron by hand, 60s)
+        shell: pwsh
+        env:
+          ORCA_E2E_HEADLESS: '1'
+          NODE_ENV: development
+          ELECTRON_ENABLE_LOGGING: '1'
+          ELECTRON_ENABLE_STACK_DUMPING: '1'
+        run: |
+          $env:ORCA_E2E_USER_DATA_DIR = Join-Path $env:TEMP 'orca-diag-userdata'
+          New-Item -ItemType Directory -Force -Path $env:ORCA_E2E_USER_DATA_DIR | Out-Null
+          $electron = Join-Path (Get-Location) 'node_modules\electron\dist\electron.exe'
+          Write-Host "electron: $electron"
+          $p = Start-Process -FilePath $electron -ArgumentList '.' -PassThru -NoNewWindow -RedirectStandardOutput diag-out.txt -RedirectStandardError diag-err.txt
+          Start-Sleep -Seconds 60
+          if (-not $p.HasExited) { Write-Host 'still running after 60s; killing'; Stop-Process -Id $p.Id -Force } else { Write-Host "exited: $($p.ExitCode)" }
+          Write-Host '----- stdout -----'; Get-Content diag-out.txt -ErrorAction SilentlyContinue | Select-Object -First 150
+          Write-Host '----- stderr -----'; Get-Content diag-err.txt -ErrorAction SilentlyContinue | Select-Object -First 150
+          Write-Host '----- userdata -----'; Get-ChildItem -Recurse $env:ORCA_E2E_USER_DATA_DIR -ErrorAction SilentlyContinue | Select-Object -First 40 | ForEach-Object { $_.FullName }
+          Get-ChildItem $env:ORCA_E2E_USER_DATA_DIR -Filter *.log -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "----- $($_.FullName) -----"; Get-Content $_.FullName | Select-Object -First 80 }
+
       # Why: separates "the harness cannot open Orca on this runner" from "the
       # Agent Teams spec fails" — the canary is an unrelated, simple spec.
       - name: Harness canary (unrelated spec)
