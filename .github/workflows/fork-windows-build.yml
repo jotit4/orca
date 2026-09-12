@@ -173,6 +173,11 @@ jobs:
       - name: Build Electron app for Windows E2E
         run: pnpm exec electron-vite build --mode e2e
 
+      # Why: electron-vite builds main/preload/renderer only; the CLI the shim
+      # runs (out/cli/index.js) comes from the separate tsc build.
+      - name: Build the Orca CLI
+        run: pnpm run build:cli
+
       - name: Verify the built CLI entrypoint the shim will run
         shell: pwsh
         run: |
