@@ -135,6 +135,9 @@ function prepareFixture(): void {
   }
   mkdirSync(launcherBinDir, { recursive: true })
   mkdirSync(fakeCliDir, { recursive: true })
+  // Why: the app sees ORCA_USER_DATA_PATH at launch; keep it an existing (empty)
+  // directory until the fixture's userData is known and it becomes a junction.
+  mkdirSync(userDataLink, { recursive: true })
   // Why: the launcher runs <app>\Orca.exe with ELECTRON_RUN_AS_NODE=1 on
   // <app>\resources\app.asar.unpacked\out\cli\index.js. node.exe honours the
   // same contract, and a junction keeps the CLI's relative requires and
@@ -193,6 +196,7 @@ test('a Claude teammate lands in a native Orca pane on Windows', async ({
   await waitForSessionReady(orcaPage)
   await waitForActiveWorktree(orcaPage)
   const userDataDir = await electronApp.evaluate(({ app }) => app.getPath('userData'))
+  rmSync(userDataLink, { recursive: true, force: true })
   symlinkSync(userDataDir, userDataLink, 'junction')
   const client = new RuntimeClient(userDataDir, 30_000, null, null)
 

@@ -184,6 +184,14 @@ jobs:
           if (-not (Test-Path -LiteralPath 'out/cli/index.js' -PathType Leaf)) { throw 'out/cli/index.js missing after the E2E build' }
           if (-not (Test-Path -LiteralPath 'native/windows-cli-launcher/.build/orca.exe' -PathType Leaf)) { throw 'launcher missing' }
 
+      # Why: separates "the harness cannot open Orca on this runner" from "the
+      # Agent Teams spec fails" — the canary is an unrelated, simple spec.
+      - name: Harness canary (unrelated spec)
+        env:
+          SKIP_BUILD: '1'
+          ORCA_E2E_FORWARD_APP_LOGS: '1'
+        run: pnpm run test:e2e tests/e2e/tab-rename.spec.ts --workers=1
+
       - name: Run Agent Teams native panes E2E
         env:
           SKIP_BUILD: '1'
