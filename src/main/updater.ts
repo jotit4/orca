@@ -1558,7 +1558,15 @@ function runBackgroundUpdateCheck(
   return true
 }
 
+/** True in fork builds compiled with ORCA_FORK_DISABLE_UPDATER=1; see src/types/build-constants.d.ts. */
+export function isForkUpdaterDisabled(): boolean {
+  return typeof ORCA_FORK_DISABLE_UPDATER !== 'undefined' && ORCA_FORK_DISABLE_UPDATER === true
+}
+
 export function checkForUpdates(): void {
+  if (isForkUpdaterDisabled()) {
+    return
+  }
   // Why: span records only check launch (always Success), not outcome; dashboards must filter `updater.outcome === 'launched'`, not this span's success rate.
   void withUpdaterSpan({ stage: 'check' }, async (span) => {
     span.setAttribute('updater.outcome', 'launched')
@@ -1581,7 +1589,7 @@ function enableIncludePrerelease(): void {
 
 /** Menu-triggered check — delegates feedback to renderer toasts via userInitiated flag */
 export function checkForUpdatesFromMenu(options?: UpdateCheckOptions): void {
-  if (!app.isPackaged || is.dev) {
+  if (!app.isPackaged || is.dev || isForkUpdaterDisabled()) {
     sendStatus({ state: 'not-available', userInitiated: true })
     return
   }
@@ -2176,6 +2184,14 @@ export function setupAutoUpdater(
     return
   }
   if (is.dev) {
+    return
+  }
+  if (isForkUpdaterDisabled()) {
+    recordUpdaterLifecycle(
+      'fork_updater_disabled',
+      {},
+      { level: 'info', message: 'Fork build: automatic update checks are disabled' }
+    )
     return
   }
 

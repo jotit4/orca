@@ -20,3 +20,9 @@ declare const ORCA_POSTHOG_WRITE_KEY: string | null
 // point a packaged build at a staging server without re-running the
 // release pipeline.
 declare const ORCA_DIAGNOSTICS_TOKEN_URL: string | null
+
+// Fork builds: `true` disables every update check (background, menu, pinned)
+// so the fork's patches are not replaced by the next upstream release.
+// Substituted from the ORCA_FORK_DISABLE_UPDATER=1 env at compile time; `false`
+// (or undefined in vitest) everywhere else.
+declare const ORCA_FORK_DISABLE_UPDATER: boolean
