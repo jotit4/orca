@@ -94,7 +94,8 @@ describe('claude agent teams shim env', () => {
       })
     ).resolves.toEqual({
       command: 'claude --teammate-mode in-process',
-      env: { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' }
+      env: { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' },
+      fallbackReason: 'pane-shell-unsupported'
     })
   })
 
@@ -118,7 +119,8 @@ describe('claude agent teams shim env', () => {
         })
       ).resolves.toEqual({
         command: 'claude --teammate-mode in-process',
-        env: { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' }
+        env: { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' },
+        fallbackReason: 'windows-shim-executable-missing'
       })
     }
   )

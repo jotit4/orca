@@ -28,6 +28,8 @@ export type TuiAgentConfig = {
   launchCmd: string
   /** Platform-specific launch command when the public binary name differs. */
   launchCmdByPlatform?: Partial<Record<NodeJS.Platform, string>>
+  /** Overrides launchCmdByPlatform for remote hosts, where the local-only launch shape does not apply. */
+  remoteLaunchCmdByPlatform?: Partial<Record<NodeJS.Platform, string>>
   expectedProcess: string
   promptInjectionMode: AgentPromptInjectionMode
   /** Option terminator required before positional prompts that may look like CLI syntax. */
@@ -66,6 +68,13 @@ export const TUI_AGENT_CONFIG: Record<TuiAgent, TuiAgentConfig> = {
     launchCmd: 'orca claude-teams',
     launchCmdByPlatform: {
       linux: `${getOrcaCliCommandNameForPlatform('linux')} claude-teams`,
+      // Why: `orca claude-teams` hosts the Claude TUI under Electron-as-node, which
+      // renders blank on Windows. A direct launch carries the same flag the runtime
+      // reads (inferCapturedClaudeAgentTeamsMode) to inject the team env itself.
+      win32: 'claude --teammate-mode auto'
+    },
+    // Why: on a remote Windows host the local runtime cannot inject the team env, so keep the CLI entrypoint there.
+    remoteLaunchCmdByPlatform: {
       win32: `${getOrcaCliCommandNameForPlatform('win32')} claude-teams`
     },
     expectedProcess: 'claude',
@@ -343,9 +352,15 @@ export function getTuiAgentLaunchCommand(
   platform: NodeJS.Platform,
   opts?: { isRemote?: boolean }
 ): string {
-  // Why: local-only orca-ide rename (avoids GNOME Orca clash) must not leak to Linux remotes, whose relay shim is always `orca`.
-  if (opts?.isRemote && platform === 'linux') {
-    return config.launchCmd
+  if (opts?.isRemote) {
+    const remoteLaunchCmd = config.remoteLaunchCmdByPlatform?.[platform]
+    if (remoteLaunchCmd) {
+      return remoteLaunchCmd
+    }
+    // Why: local-only orca-ide rename (avoids GNOME Orca clash) must not leak to Linux remotes, whose relay shim is always `orca`.
+    if (platform === 'linux') {
+      return config.launchCmd
+    }
   }
   return config.launchCmdByPlatform?.[platform] ?? config.launchCmd
 }

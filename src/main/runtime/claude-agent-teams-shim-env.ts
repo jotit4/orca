@@ -19,7 +19,14 @@ export type ClaudeAgentTeamsLaunchPlan = {
   command: string
   env: Record<string, string>
   envToDelete?: string[]
+  /** Set when native panes were requested but the plan degraded to in-process, and why. */
+  fallbackReason?: ClaudeAgentTeamsFallbackReason
 }
+
+export type ClaudeAgentTeamsFallbackReason =
+  | 'pane-shell-unsupported'
+  | 'shim-bin-unresolved'
+  | 'windows-shim-executable-missing'
 
 export async function ensureClaudeAgentTeamsShimDir(root = defaultShimRoot()): Promise<string> {
   await mkdir(root, { recursive: true })
@@ -75,21 +82,36 @@ export async function buildClaudeAgentTeamsLaunchPlan(args: {
   if (!args.command || mode === 'off' || !isDirectClaudeCommand(args.command)) {
     return null
   }
-  const inProcess: ClaudeAgentTeamsLaunchPlan = {
-    command: addClaudeTeammateModeInProcess(args.command),
-    env: { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' }
+  const inProcess = (
+    fallbackReason?: ClaudeAgentTeamsFallbackReason
+  ): ClaudeAgentTeamsLaunchPlan => {
+    if (fallbackReason) {
+      // Why: a silent degrade is the failure mode that cost days on Windows —
+      // the team "works" with every teammate hidden inside the leader's TUI.
+      console.warn(`[claude-agent-teams] native panes unavailable (${fallbackReason}); launching in-process`)
+    }
+    return {
+      command: addClaudeTeammateModeInProcess(args.command!),
+      env: { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' },
+      ...(fallbackReason ? { fallbackReason } : {})
+    }
   }
-  // Why: Claude Code writes pane commands for sh, and cmd.exe is the one pane shell Orca cannot re-spell them for.
+  if (mode === 'in-process') {
+    return inProcess()
+  }
+  // Why: Claude Code writes pane commands for sh; cmd.exe cannot carry them, and on Windows only PowerShell can run the shim.
   if (
-    mode === 'in-process' ||
-    !supportsClaudeAgentTeamsPaneCommand(resolveStartupShell(process.platform, args.paneShell))
+    !supportsClaudeAgentTeamsPaneCommand(
+      resolveStartupShell(process.platform, args.paneShell),
+      process.platform
+    )
   ) {
-    return inProcess
+    return inProcess('pane-shell-unsupported')
   }
   const shimBin = resolveClaudeAgentTeamsShimBin(args.baseEnv)
   if (!shimBin) {
     // Why: without an absolute CLI path the shim would resolve a bare `orca` against the pane cwd, so degrade instead.
-    return inProcess
+    return inProcess('shim-bin-unresolved')
   }
   const shimDir = await ensureClaudeAgentTeamsShimDir(args.shimRoot ?? defaultShimRoot())
   // Why: the .cmd shim is unspawnable from Claude Code, so without the executable the team would launch paneless.
@@ -97,7 +119,7 @@ export async function buildClaudeAgentTeamsLaunchPlan(args: {
     process.platform === 'win32' &&
     !isExecutableFile(windowsClaudeAgentTeamsShimExecutablePath(shimDir))
   ) {
-    return inProcess
+    return inProcess('windows-shim-executable-missing')
   }
   const env = args.createTeamEnv(shimDir, shimBin)
   return {

@@ -19,8 +19,20 @@ const POWERSHELL_HOLDING_COMMAND = 'Wait-Event'
  * True when Orca can express a teammate pane command in this shell. `cmd` is
  * excluded because its `set "NAME=value"` form cannot carry a `"`, `%` or `!`
  * safely, and a mis-quoted teammate launch is worse than the in-process fallback.
+ *
+ * On Windows only PowerShell qualifies. A `posix` family there means Git Bash
+ * or WSL: the sh text Claude Code writes would parse, but the tmux.exe shim,
+ * the Windows launcher path in ORCA_AGENT_TEAMS_SHIM_BIN and the PATH Orca
+ * prepends are all native-Windows artifacts that neither shell can run, so the
+ * team would come up paneless and fail late instead of degrading up front.
  */
-export function supportsClaudeAgentTeamsPaneCommand(shell: AgentStartupShell): boolean {
+export function supportsClaudeAgentTeamsPaneCommand(
+  shell: AgentStartupShell,
+  platform: NodeJS.Platform = process.platform
+): boolean {
+  if (platform === 'win32') {
+    return shell === 'powershell'
+  }
   return shell !== 'cmd'
 }
 
@@ -87,7 +99,7 @@ export function retargetClaudeAgentTeamsPaneCommand(
   const body =
     argv.length === 1 && argv[0] === 'cat'
       ? POWERSHELL_HOLDING_COMMAND
-      : buildShellCommandFromArgv(argv, shell)
+      : powerShellNativeInvocation(argv)
   return [
     ...(directory === null ? [] : [`Set-Location ${quoteStartupArg(directory, shell)}`]),
     ...assignments.map((each) => `$env:${each.name} = ${quoteStartupArg(each.value, shell)}`),
@@ -198,4 +210,64 @@ export function tokenizePosixPaneCommand(command: string): PosixPaneTokens {
   }
   flush()
   return { ok: true, tokens }
+}
+
+/**
+ * `& '<exe>' --% <args>`: the stop-parsing token hands the rest of the line to
+ * the executable verbatim, so the only quoting that matters is the one
+ * CommandLineToArgvW applies in the child.
+ *
+ * Why not `& '<exe>' '<arg>' '<arg>'`: PowerShell re-quotes native arguments
+ * itself, and Windows PowerShell 5.1 (the `powershell.exe` default) mangles any
+ * argument carrying a `"` — it wraps the argument in quotes without escaping the
+ * inner ones, so the child sees it split. PowerShell 7 fixed this behind
+ * PSNativeCommandArgumentPassing, but the notebook default is still 5.1.
+ *
+ * `--%` has two blind spots, both handled: PowerShell still expands `%NAME%`
+ * after it, and the token cannot span a line, so arguments carrying `%` or a
+ * newline take the PowerShell-quoted form instead.
+ */
+function powerShellNativeInvocation(argv: string[]): string {
+  const [executable, ...args] = argv
+  const callee = `& ${quoteStartupArg(executable!, 'powershell')}`
+  if (args.length === 0) {
+    return callee
+  }
+  if (args.every(canFollowStopParsingToken)) {
+    return `${callee} --% ${args.map(quoteWindowsCommandLineArg).join(' ')}`
+  }
+  return buildShellCommandFromArgv(argv, 'powershell')
+}
+
+function canFollowStopParsingToken(arg: string): boolean {
+  return !/[%\r\n]/.test(arg)
+}
+
+/**
+ * Quotes one argument for a Windows command line the way CommandLineToArgvW
+ * (and every CRT / libuv parser) reads it back: `"` becomes `\"`, backslashes
+ * only need doubling when they precede a `"` or close the quoted span.
+ *
+ * Also quotes cmd.exe metacharacters (`& | < > ^ ( )`): when the executable is
+ * a `.cmd` shim (Claude Code installed through npm), cmd.exe reads the line
+ * before the child does, and it treats those literally only inside `"…"`.
+ */
+export function quoteWindowsCommandLineArg(value: string): string {
+  if (value.length > 0 && !/[\s"&|<>^()]/.test(value)) {
+    return value
+  }
+  let quoted = '"'
+  let backslashes = 0
+  for (const character of value) {
+    if (character === '\\') {
+      backslashes += 1
+      continue
+    }
+    quoted +=
+      character === '"'
+        ? `${'\\'.repeat(backslashes * 2 + 1)}"`
+        : `${'\\'.repeat(backslashes)}${character}`
+    backslashes = 0
+  }
+  return `${quoted}${'\\'.repeat(backslashes * 2)}"`
 }
