@@ -49,7 +49,17 @@ async function installWindowsShimExecutable(root: string): Promise<void> {
   if (!launcher || !isExecutableFile(launcher)) {
     return
   }
-  await writeIfChanged(windowsClaudeAgentTeamsShimExecutablePath(root), await readFile(launcher))
+  const target = windowsClaudeAgentTeamsShimExecutablePath(root)
+  try {
+    await writeIfChanged(target, await readFile(launcher))
+  } catch (error) {
+    // Why: Windows refuses to replace an executable while a copy of it is still
+    // running (a teammate's tmux call in flight). An older shim that already
+    // exists keeps working, so keep the launch alive instead of failing it.
+    if (!isExecutableFile(target)) {
+      throw error
+    }
+  }
 }
 
 export async function buildClaudeAgentTeamsLaunchPlan(args: {
