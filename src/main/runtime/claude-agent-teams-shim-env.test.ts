@@ -125,6 +125,30 @@ describe('claude agent teams shim env', () => {
     }
   )
 
+  it.skipIf(process.platform !== 'win32')(
+    'installs the published launcher as the spawnable tmux.exe shim',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'orca-agent-teams-cli-'))
+      roots.push(root)
+      const launcher = join(root, 'orca.exe')
+      await writeFile(launcher, 'MZ-launcher', 'utf8')
+
+      const plan = await buildClaudeAgentTeamsLaunchPlan({
+        command: 'claude',
+        mode: 'native-panes-shim',
+        baseEnv: { PATH: root, ORCA_AGENT_TEAMS_SHIM_BIN: launcher },
+        shimRoot: root,
+        createTeamEnv: (shimDir, shimBin) => ({ SHIM_DIR: shimDir, SHIM_BIN: shimBin })
+      })
+
+      expect(plan).toMatchObject({
+        command: 'claude --teammate-mode auto',
+        env: { SHIM_DIR: root, SHIM_BIN: launcher }
+      })
+      expect(await readFile(join(root, 'tmux.exe'), 'utf8')).toBe('MZ-launcher')
+    }
+  )
+
   it('resolves the dev CLI wrapper for the tmux callback binary', async () => {
     const root = await mkdtemp(join(tmpdir(), 'orca-agent-teams-cli-'))
     roots.push(root)

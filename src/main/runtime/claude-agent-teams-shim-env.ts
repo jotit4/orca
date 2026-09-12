@@ -28,12 +28,18 @@ export type ClaudeAgentTeamsFallbackReason =
   | 'shim-bin-unresolved'
   | 'windows-shim-executable-missing'
 
-export async function ensureClaudeAgentTeamsShimDir(root = defaultShimRoot()): Promise<string> {
+export async function ensureClaudeAgentTeamsShimDir(
+  root = defaultShimRoot(),
+  opts?: {
+    /** Launcher executable to install as tmux.exe; defaults to the packaged one. */
+    windowsLauncher?: string | null
+  }
+): Promise<string> {
   await mkdir(root, { recursive: true })
   await writeIfChanged(join(root, 'tmux'), unixShimScript())
   if (process.platform === 'win32') {
     await writeIfChanged(join(root, 'tmux.cmd'), windowsShimScript())
-    await installWindowsShimExecutable(root)
+    await installWindowsShimExecutable(root, opts?.windowsLauncher ?? bundledLauncherPath())
   }
   return root
 }
@@ -51,9 +57,12 @@ export function windowsClaudeAgentTeamsShimExecutablePath(root = defaultShimRoot
  * Orca CLI, and it switches to tmux-shim mode when its own file name is `tmux`,
  * so a copy of it under that name is the shim.
  */
-async function installWindowsShimExecutable(root: string): Promise<void> {
-  const launcher = bundledLauncherPath()
-  if (!launcher || !isExecutableFile(launcher)) {
+async function installWindowsShimExecutable(
+  root: string,
+  launcher: string | null
+): Promise<void> {
+  // Why: only a real launcher binary can be the shim; a `.cmd` (the dev CLI wrapper) is exactly what Claude Code cannot spawn.
+  if (!launcher || !/\.exe$/i.test(launcher) || !isExecutableFile(launcher)) {
     return
   }
   const target = windowsClaudeAgentTeamsShimExecutablePath(root)
@@ -113,7 +122,11 @@ export async function buildClaudeAgentTeamsLaunchPlan(args: {
     // Why: without an absolute CLI path the shim would resolve a bare `orca` against the pane cwd, so degrade instead.
     return inProcess('shim-bin-unresolved')
   }
-  const shimDir = await ensureClaudeAgentTeamsShimDir(args.shimRoot ?? defaultShimRoot())
+  // Why: the shim is a copy of the launcher the team publishes as ORCA_AGENT_TEAMS_SHIM_BIN, so the
+  // same binary serves packaged installs and an unpackaged build pointed at a built launcher.
+  const shimDir = await ensureClaudeAgentTeamsShimDir(args.shimRoot ?? defaultShimRoot(), {
+    windowsLauncher: shimBin
+  })
   // Why: the .cmd shim is unspawnable from Claude Code, so without the executable the team would launch paneless.
   if (
     process.platform === 'win32' &&

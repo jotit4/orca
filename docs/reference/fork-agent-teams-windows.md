@@ -122,6 +122,16 @@ El test `forwards tmux argv to the CLI when copied into the Agent Teams shim dir
 (`config/scripts/build-windows-cli-launcher.test.mjs`) sólo corre en Windows: compila el
 launcher con `csc.exe` y verifica que `tmux.exe` reenvíe `['agent-teams-tmux', ...]`.
 
+## E2E en la VM de Windows de GitHub Actions
+
+El job `e2e-windows-agent-teams` de `fork-windows-build.yml` corre
+`tests/e2e/claude-agent-teams-windows-native-panes.spec.ts` en un runner `windows-2022`:
+Orca real (build e2e), un `claude` falso en el PATH que replica los comandos tmux exactos
+de Claude Code 2.1.270, y un teammate falso que deja por escrito el argv, cwd y env que
+recibió. Verifica la cadena completa: plan de lanzamiento → `tmux.exe` → CLI → runtime →
+dispatcher → re-escritura PowerShell → segundo pane con el comando corriendo. No necesita
+cuenta de Claude. Lo único que no cubre es el propio binario de Claude Code.
+
 ## Deuda
 
 - `claude-agent-teams-tmux-dispatcher.ts` supera el `max-lines` (300) del pre-commit desde

@@ -127,3 +127,70 @@ jobs:
             dist/latest.yml
           if-no-files-found: error
           retention-days: 30
+
+  # Why: the unit tests prove each piece; this proves the chain on a real
+  # Windows host — Orca running, a fake `claude` replaying Claude Code's tmux
+  # calls, tmux.exe → CLI → runtime → dispatcher → a second PowerShell pane that
+  # actually runs the re-spelled teammate command. No Claude account needed.
+  e2e-windows-agent-teams:
+    name: Windows Agent Teams native panes E2E
+    runs-on: windows-2022
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+          cache: pnpm
+
+      - name: Install dependencies
+        uses: nick-fields/retry@v4
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: pnpm install --frozen-lockfile
+
+      - name: Build the Windows CLI launcher
+        run: node config/scripts/build-windows-cli-launcher.mjs --output native/windows-cli-launcher/.build/orca.exe
+
+      - name: Build Electron app for Windows E2E
+        run: pnpm exec electron-vite build --mode e2e
+
+      - name: Verify the built CLI entrypoint the shim will run
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath 'out/cli/index.js' -PathType Leaf)) { throw 'out/cli/index.js missing after the E2E build' }
+          if (-not (Test-Path -LiteralPath 'native/windows-cli-launcher/.build/orca.exe' -PathType Leaf)) { throw 'launcher missing' }
+
+      - name: Run Agent Teams native panes E2E
+        env:
+          SKIP_BUILD: '1'
+          ORCA_E2E_FORWARD_APP_LOGS: '1'
+          ORCA_E2E_WINDOWS_CLI_LAUNCHER: ${{ github.workspace }}\native\windows-cli-launcher\.build\orca.exe
+        run: pnpm run test:e2e tests/e2e/claude-agent-teams-windows-native-panes.spec.ts --workers=1
+
+      - name: Upload Playwright traces
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-agent-teams-e2e-traces-${{ github.run_number }}
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore
