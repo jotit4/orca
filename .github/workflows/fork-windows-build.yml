@@ -1,0 +1,107 @@
+# Fork-only: build an UNSIGNED Windows installer from any ref of this fork.
+#
+# Why: upstream only produces Windows installers inside the SignPath release
+# pipeline (release-cut.yml), which needs org secrets a fork does not have. The
+# Windows CLI launcher (orca.exe, and its tmux.exe copy that Claude Agent Teams
+# needs) can only be compiled on a Windows host, so this cannot run locally on
+# Linux either. Mirrors the `build` job of release-cut.yml minus signing and
+# publishing; the installer is uploaded as a workflow artifact.
+name: Fork Windows build (unsigned)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or SHA to build (defaults to the dispatching ref)
+        type: string
+        default: ''
+
+jobs:
+  build-windows:
+    # Why: windows-latest moved to the Windows 2025 / VS 2026 image before
+    # node-gyp could detect VS 18, breaking native dependency install.
+    runs-on: windows-2022
+    timeout-minutes: 120
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+          cache: pnpm
+
+      - name: Cache electron-builder downloads
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~\AppData\Local\electron\Cache
+            ~\AppData\Local\electron-builder\Cache
+          key: electron-builder-win-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            electron-builder-win-
+
+      - name: Install dependencies
+        uses: nick-fields/retry@v4
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: pnpm install --frozen-lockfile
+
+      # Why: no ORCA_BUILD_IDENTITY / telemetry key on purpose. This is an
+      # unofficial build: telemetry stays off and the updater treats it as such.
+      - name: Build app
+        run: pnpm build:release
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          # Why: keep the fork's patches; see ORCA_FORK_DISABLE_UPDATER in electron.vite.config.ts.
+          ORCA_FORK_DISABLE_UPDATER: '1'
+
+      - name: Package Windows installer (unsigned)
+        shell: pwsh
+        run: |
+          node config/scripts/ensure-native-runtime.mjs --runtime=electron
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm exec electron-builder --config config/electron-builder.config.cjs --win --publish never
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify Windows node-pty ConPTY runtime and the Agent Teams launcher
+        shell: pwsh
+        run: |
+          $requiredFiles = @(
+            'dist/win-unpacked/resources/node_modules/node-pty/build/Release/conpty.node',
+            'dist/win-unpacked/resources/node_modules/node-pty/build/Release/conpty/conpty.dll',
+            'dist/win-unpacked/resources/node_modules/node-pty/build/Release/conpty/OpenConsole.exe',
+            'dist/win-unpacked/resources/bin/orca.exe'
+          )
+          foreach ($file in $requiredFiles) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Missing required file: $file"
+            }
+            Get-Item -LiteralPath $file
+          }
+          Get-ChildItem dist -Filter *.exe | Format-Table Name, Length
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: orca-windows-setup-unsigned-${{ github.run_number }}
+          path: |
+            dist/*.exe
+            dist/*.blockmap
+            dist/latest.yml
+          if-no-files-found: error
+          retention-days: 30
