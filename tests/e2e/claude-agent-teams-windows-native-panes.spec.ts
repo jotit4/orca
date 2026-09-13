@@ -165,6 +165,10 @@ function prepareFixture(): void {
     `@echo off\r\n"${process.execPath}" "${path.join(fakeCliDir, 'fake-claude.cjs')}" %*\r\n`
   )
   writeFileSync(teammateScriptPath, fakeTeammateSource())
+  // Why: the catalog lists "Claude Agent Teams" only when an Orca CLI (`orca`,
+  // `orca-dev` or `orca-ide`) is detected next to `claude`; unpackaged builds
+  // install none, and on Windows the entry launches `claude` directly anyway.
+  writeFileSync(path.join(fakeCliDir, 'orca-dev.cmd'), '@echo off\r\necho orca-dev stub\r\n')
 }
 
 prepareFixture()
@@ -220,8 +224,22 @@ async function verifyNativeTeammate(args: {
   symlinkSync(userDataDir, userDataLink, 'junction')
   const client = new RuntimeClient(userDataDir, 30_000, null, null)
   if (powerShell) {
-    // Why: the re-spelled teammate command branches on the PowerShell generation; both must land the argv intact.
-    await client.call('settings.update', { terminalWindowsPowerShellImplementation: powerShell })
+    // Why: the re-spelled teammate command branches on the PowerShell generation; both must
+    // land the argv intact. The runtime RPC does not expose this setting; the renderer store does.
+    await orcaPage.evaluate(
+      (implementation) =>
+        window.__store?.getState().updateSettings({
+          terminalWindowsPowerShellImplementation: implementation
+        }),
+      powerShell
+    )
+    await expect
+      .poll(() =>
+        orcaPage.evaluate(
+          () => window.__store?.getState().settings?.terminalWindowsPowerShellImplementation ?? null
+        )
+      )
+      .toBe(powerShell)
   }
 
   writeFileSync(
