@@ -132,6 +132,22 @@ recibió. Verifica la cadena completa: plan de lanzamiento → `tmux.exe` → CL
 dispatcher → re-escritura PowerShell → segundo pane con el comando corriendo. No necesita
 cuenta de Claude. Lo único que no cubre es el propio binario de Claude Code.
 
+## Regresión heredada que dejaba Orca sin ventana en Windows (resuelta)
+
+La base del fork (upstream del 12/08, `d6e1d84`) tiene un bug que upstream arregló ese
+mismo día en #14173: en un perfil nuevo de Windows, `writeProfileIndex` hace `fsync` sobre
+un descriptor abierto en modo lectura y Windows responde `EPERM`; queda como unhandled
+rejection en el bootstrap y **el main process sigue vivo pero nunca abre la ventana**. Se
+vio primero en el runner de GitHub (Playwright: "firstWindow: Timeout 120000ms") y aplica
+igual a un instalador del fork en una máquina donde Orca nunca corrió. Cherry-pickeados
+#14173 entero y el hunk de `secure-file.ts` de #14235. **Los instaladores de los runs 1 a 3
+del workflow tienen el bug; usar uno posterior al commit `2025d2046d`.**
+
+Cómo se diagnosticó: lanzando Electron a mano en el runner con `ORCA_STARTUP_DIAGNOSTICS=1`
+y el home aislado que exige `configureDevUserDataPath` (`ORCA_E2E_USER_DATA_DIR`,
+`ORCA_E2E_HOME_DIR`, `USERPROFILE`/`HOME` apuntando a `<userData>\home`). Ese paso quedó en
+el job E2E del workflow.
+
 ## Deuda
 
 - `claude-agent-teams-tmux-dispatcher.ts` supera el `max-lines` (300) del pre-commit desde
