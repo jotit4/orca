@@ -196,7 +196,12 @@ jobs:
           ELECTRON_ENABLE_STACK_DUMPING: '1'
         run: |
           $env:ORCA_E2E_USER_DATA_DIR = Join-Path $env:TEMP 'orca-diag-userdata'
-          New-Item -ItemType Directory -Force -Path $env:ORCA_E2E_USER_DATA_DIR | Out-Null
+          # Why: mirror the harness' home isolation, or configureDevUserDataPath refuses to start.
+          $env:ORCA_E2E_HOME_DIR = Join-Path $env:ORCA_E2E_USER_DATA_DIR 'home'
+          New-Item -ItemType Directory -Force -Path $env:ORCA_E2E_HOME_DIR | Out-Null
+          $env:USERPROFILE = $env:ORCA_E2E_HOME_DIR
+          $env:HOME = $env:ORCA_E2E_HOME_DIR
+          $env:ORCA_STARTUP_DIAGNOSTICS = '1'
           $electron = Join-Path (Get-Location) 'node_modules\electron\dist\electron.exe'
           Write-Host "electron: $electron"
           $p = Start-Process -FilePath $electron -ArgumentList '.' -PassThru -NoNewWindow -RedirectStandardOutput diag-out.txt -RedirectStandardError diag-err.txt
