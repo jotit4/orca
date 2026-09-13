@@ -319,7 +319,22 @@ async function verifyNativeTeammate(args: {
       )
       .toBe(2)
   }
-  await expect.poll(() => countVisibleTerminalPanes(orcaPage), { timeout: 30_000 }).toBe(2)
+  // Why: the leader's tab need not be the active one in the renderer (a runtime-created
+  // terminal opens in the background), so count the PTYs the renderer mounted for that tab.
+  const leaderTabId = leader.tabId
+  const renderedPaneCount = leaderTabId
+    ? () =>
+        orcaPage.evaluate(
+          (tabId) => window.__store?.getState().ptyIdsByTabId[tabId]?.length ?? 0,
+          leaderTabId
+        )
+    : () => countVisibleTerminalPanes(orcaPage)
+  await expect
+    .poll(renderedPaneCount, {
+      timeout: 30_000,
+      message: 'the renderer never mounted a second pane in the leader tab'
+    })
+    .toBe(2)
 }
 
 async function launchLeaderThroughRuntime(
@@ -373,11 +388,12 @@ test('the "Claude Agent Teams" catalog entry opens a native-pane team on Windows
       const diagnostics = async (): Promise<string> => {
         const menu = await orcaPage.getByRole('menuitem').allTextContents().catch(() => [])
         const detected = await orcaPage.evaluate(() => {
-          const state = window.__store?.getState()
-          return {
-            detectedAgentIds: state?.detectedAgentIds ?? null,
-            runtimeDetectedAgentIds: state?.runtimeDetectedAgentIds ?? null
-          }
+          const state = (window.__store?.getState() ?? {}) as Record<string, unknown>
+          return Object.fromEntries(
+            Object.entries(state).filter(
+              ([key, value]) => /detect/i.test(key) && typeof value !== 'function'
+            )
+          )
         })
         let where = ''
         try {
