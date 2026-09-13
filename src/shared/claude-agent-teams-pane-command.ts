@@ -1,9 +1,4 @@
-import {
-  buildShellCommandFromArgv,
-  commandSeparator,
-  quoteStartupArg,
-  type AgentStartupShell
-} from './tui-agent-startup-shell'
+import { commandSeparator, quoteStartupArg, type AgentStartupShell } from './tui-agent-startup-shell'
 
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
 
@@ -213,19 +208,22 @@ export function tokenizePosixPaneCommand(command: string): PosixPaneTokens {
 }
 
 /**
- * `& '<exe>' --% <args>`: the stop-parsing token hands the rest of the line to
- * the executable verbatim, so the only quoting that matters is the one
- * CommandLineToArgvW applies in the child.
+ * `& '<exe>' '<arg>' …`, spelled twice: PowerShell's own native-argument
+ * quoting is the only channel that is honoured the same way whether the
+ * command reaches the shell by `-EncodedCommand` or typed input, but WHAT it
+ * does to an argument depends on the version:
  *
- * Why not `& '<exe>' '<arg>' '<arg>'`: PowerShell re-quotes native arguments
- * itself, and Windows PowerShell 5.1 (the `powershell.exe` default) mangles any
- * argument carrying a `"` — it wraps the argument in quotes without escaping the
- * inner ones, so the child sees it split. PowerShell 7 fixed this behind
- * PSNativeCommandArgumentPassing, but the notebook default is still 5.1.
+ * - 7.3+ (`$PSNativeCommandArgumentPassing`): with `Standard` the shell escapes
+ *   `"` and backslashes for CommandLineToArgvW itself, so the true values are
+ *   passed as-is.
+ * - 5.1 / 7.0–7.2 (legacy): the shell wraps an argument in `"…"` only when it
+ *   carries whitespace and never escapes an inner `"`, so the values are
+ *   pre-escaped here (`legacyPowerShellNativeArg`) to land intact.
  *
- * `--%` has two blind spots, both handled: PowerShell still expands `%NAME%`
- * after it, and the token cannot span a line, so arguments carrying `%` or a
- * newline take the PowerShell-quoted form instead.
+ * Why not `--%`: on 7.3+ the text after the stop-parsing token is split on
+ * whitespace and every piece is re-quoted (observed on a real host: `"say`,
+ * `\"hi\"`, `|` arrived as four arguments), so no single spelling survives
+ * both versions. The branch is decided by the shell that runs it.
  */
 function powerShellNativeInvocation(argv: string[]): string {
   const [executable, ...args] = argv
@@ -233,41 +231,41 @@ function powerShellNativeInvocation(argv: string[]): string {
   if (args.length === 0) {
     return callee
   }
-  if (args.every(canFollowStopParsingToken)) {
-    return `${callee} --% ${args.map(quoteWindowsCommandLineArg).join(' ')}`
-  }
-  return buildShellCommandFromArgv(argv, 'powershell')
+  const modern = [callee, ...args.map((arg) => quoteStartupArg(arg, 'powershell'))].join(' ')
+  const legacy = [
+    callee,
+    ...args.map((arg) => quoteStartupArg(legacyPowerShellNativeArg(arg), 'powershell'))
+  ].join(' ')
+  return `if (${MODERN_ARGUMENT_PASSING_TEST}) { $PSNativeCommandArgumentPassing = 'Standard'; ${modern} } else { ${legacy} }`
 }
 
-function canFollowStopParsingToken(arg: string): boolean {
-  return !/[%\r\n]/.test(arg)
-}
+/** True in the PowerShell that runs it when native-argument passing is version 7.3 or later semantics. */
+export const MODERN_ARGUMENT_PASSING_TEST =
+  "[version]($PSVersionTable.PSVersion.ToString().Split('-')[0]) -ge [version]'7.3.0'"
 
 /**
- * Quotes one argument for a Windows command line the way CommandLineToArgvW
- * (and every CRT / libuv parser) reads it back: `"` becomes `\"`, backslashes
- * only need doubling when they precede a `"` or close the quoted span.
+ * Pre-escapes one argument for legacy PowerShell native-argument passing so
+ * that CommandLineToArgvW in the child reads the original value back.
  *
- * Also quotes cmd.exe metacharacters (`& | < > ^ ( )`): when the executable is
- * a `.cmd` shim (Claude Code installed through npm), cmd.exe reads the line
- * before the child does, and it treats those literally only inside `"…"`.
+ * Legacy passing wraps the argument in `"…"` iff it contains whitespace (or is
+ * empty) and otherwise emits it verbatim; in both cases an inner `"` must be
+ * escaped as `\"` (backslashes before it doubled), and a trailing backslash run
+ * needs doubling only when the shell will add the closing quote after it.
  */
-export function quoteWindowsCommandLineArg(value: string): string {
-  if (value.length > 0 && !/[\s"&|<>^()]/.test(value)) {
-    return value
-  }
-  let quoted = '"'
+export function legacyPowerShellNativeArg(value: string): string {
+  const shellWillQuote = value.length === 0 || /\s/.test(value)
+  let escaped = ''
   let backslashes = 0
   for (const character of value) {
     if (character === '\\') {
       backslashes += 1
       continue
     }
-    quoted +=
+    escaped +=
       character === '"'
         ? `${'\\'.repeat(backslashes * 2 + 1)}"`
         : `${'\\'.repeat(backslashes)}${character}`
     backslashes = 0
   }
-  return `${quoted}${'\\'.repeat(backslashes * 2)}"`
+  return `${escaped}${'\\'.repeat(shellWillQuote ? backslashes * 2 : backslashes)}`
 }

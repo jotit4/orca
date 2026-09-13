@@ -1,10 +1,21 @@
 import { describe, expect, it } from 'vitest'
 import {
-  quoteWindowsCommandLineArg,
+  MODERN_ARGUMENT_PASSING_TEST,
+  legacyPowerShellNativeArg,
   retargetClaudeAgentTeamsPaneCommand,
   supportsClaudeAgentTeamsPaneCommand,
   tokenizePosixPaneCommand
 } from './claude-agent-teams-pane-command'
+
+const q = (value: string): string => `'${value.replace(/'/g, "''")}'`
+
+/** The two-branch native call the rewrite emits for `exe` with `args`. */
+function nativeCall(exe: string, args: string[]): string {
+  const modern = [`& ${q(exe)}`, ...args.map(q)].join(' ')
+  const legacy = [`& ${q(exe)}`, ...args.map((arg) => q(legacyPowerShellNativeArg(arg)))].join(' ')
+  const standard = "$PSNativeCommandArgumentPassing = 'Standard'"
+  return `if (${MODERN_ARGUMENT_PASSING_TEST}) { ${standard}; ${modern} } else { ${legacy} }`
+}
 
 // Verbatim from Claude Code 2.1.238's tmux backend, minus the session ids.
 const TEAMMATE_COMMAND =
@@ -13,12 +24,16 @@ const TEAMMATE_COMMAND =
 
 describe('retargetClaudeAgentTeamsPaneCommand', () => {
   it('re-spells the teammate launch for PowerShell', () => {
+    const call = nativeCall('C:\\Users\\dev\\.local\\bin\\claude.exe', [
+      '--agent-name',
+      'Nova',
+      '--agent-color',
+      'blue',
+      '--model',
+      'opus'
+    ])
     expect(retargetClaudeAgentTeamsPaneCommand(TEAMMATE_COMMAND, 'powershell')).toBe(
-      "Set-Location 'E:\\Repos\\demo'; " +
-        "$env:CLAUDECODE = '1'; " +
-        "$env:CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1'; " +
-        "& 'C:\\Users\\dev\\.local\\bin\\claude.exe' --% --agent-name Nova " +
-        '--agent-color blue --model opus'
+      `Set-Location 'E:\\Repos\\demo'; $env:CLAUDECODE = '1'; $env:CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1'; ${call}`
     )
   })
 
@@ -45,7 +60,7 @@ describe('retargetClaudeAgentTeamsPaneCommand', () => {
   })
 
   it('handles a bare command with neither prefix', () => {
-    expect(retargetClaudeAgentTeamsPaneCommand('sleep 1', 'powershell')).toBe("& 'sleep' --% 1")
+    expect(retargetClaudeAgentTeamsPaneCommand('sleep 1', 'powershell')).toBe(nativeCall('sleep', ['1']))
   })
 
   it('keeps the cd prefix optional', () => {
@@ -67,8 +82,7 @@ describe('retargetClaudeAgentTeamsPaneCommand', () => {
         'powershell'
       )
     ).toBe(
-      "Set-Location '/repo'; $env:A = 'x|y'; " +
-        '& \'claude\' --% --prompt "a|b" --filter c;d --to ">e"'
+      `Set-Location '/repo'; $env:A = 'x|y'; ${nativeCall('claude', ['--prompt', 'a|b', '--filter', 'c;d', '--to', '>e'])}`
     )
   })
 
@@ -88,49 +102,35 @@ describe('retargetClaudeAgentTeamsPaneCommand', () => {
     expect(retargetClaudeAgentTeamsPaneCommand("cd '/repo", 'powershell')).toBeNull()
   })
 
-  it('escapes quotes for CommandLineToArgvW instead of letting PowerShell 5.1 split them', () => {
+  it('keeps quotes and trailing backslashes intact through both PowerShell generations', () => {
     expect(
       retargetClaudeAgentTeamsPaneCommand(
         "cd '/repo' && claude --agent-name 'say \"hi\"' --dir 'C:\\a b\\'",
         'powershell'
       )
     ).toBe(
-      'Set-Location \'/repo\'; & \'claude\' --% --agent-name "say \\"hi\\"" --dir "C:\\a b\\\\"'
+      `Set-Location '/repo'; ${nativeCall('claude', ['--agent-name', 'say "hi"', '--dir', 'C:\\a b\\'])}`
     )
-  })
-
-  it('falls back to PowerShell quoting when an argument carries a percent sign', () => {
-    // Why: PowerShell still expands %NAME% after the stop-parsing token.
-    expect(
-      retargetClaudeAgentTeamsPaneCommand("cd '/repo' && claude --prompt '100%'", 'powershell')
-    ).toBe("Set-Location '/repo'; & 'claude' '--prompt' '100%'")
-  })
-
-  it('keeps a quoted newline inside an argument out of the stop-parsing line', () => {
-    expect(
-      retargetClaudeAgentTeamsPaneCommand("claude --prompt 'a\nb'", 'powershell')
-    ).toBe("& 'claude' '--prompt' 'a\nb'")
   })
 })
 
-describe('quoteWindowsCommandLineArg', () => {
+describe('legacyPowerShellNativeArg', () => {
   it('leaves plain arguments alone', () => {
-    expect(quoteWindowsCommandLineArg('--agent-name')).toBe('--agent-name')
-    expect(quoteWindowsCommandLineArg('C:\\Users\\dev\\claude.exe')).toBe('C:\\Users\\dev\\claude.exe')
+    expect(legacyPowerShellNativeArg('--agent-name')).toBe('--agent-name')
+    expect(legacyPowerShellNativeArg('C:\\Users\\dev\\claude.exe')).toBe('C:\\Users\\dev\\claude.exe')
   })
 
-  it('quotes whitespace, quotes, empties and cmd metacharacters', () => {
-    expect(quoteWindowsCommandLineArg('a b')).toBe('"a b"')
-    expect(quoteWindowsCommandLineArg('')).toBe('""')
-    expect(quoteWindowsCommandLineArg('say "hi"')).toBe('"say \\"hi\\""')
-    expect(quoteWindowsCommandLineArg('a|b')).toBe('"a|b"')
-    expect(quoteWindowsCommandLineArg('x&y')).toBe('"x&y"')
+  it('escapes inner quotes whether or not the shell will wrap the argument', () => {
+    // Why: legacy passing wraps only on whitespace; the inner quote needs escaping either way.
+    expect(legacyPowerShellNativeArg('say "hi"')).toBe('say \\"hi\\"')
+    expect(legacyPowerShellNativeArg('a"b')).toBe('a\\"b')
+    expect(legacyPowerShellNativeArg('x\\\\"y')).toBe('x\\\\\\\\\\"y')
   })
 
-  it('doubles backslashes only where CommandLineToArgvW would eat them', () => {
-    expect(quoteWindowsCommandLineArg('C:\\a b\\')).toBe('"C:\\a b\\\\"')
-    expect(quoteWindowsCommandLineArg('back\\slash "q"')).toBe('"back\\slash \\"q\\""')
-    expect(quoteWindowsCommandLineArg('x\\\\"y')).toBe('"x\\\\\\\\\\"y"')
+  it('doubles a trailing backslash run only when the shell adds a closing quote', () => {
+    expect(legacyPowerShellNativeArg('C:\\a b\\')).toBe('C:\\a b\\\\')
+    expect(legacyPowerShellNativeArg('C:\\ab\\')).toBe('C:\\ab\\')
+    expect(legacyPowerShellNativeArg('')).toBe('')
   })
 })
 

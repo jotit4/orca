@@ -248,7 +248,10 @@ describe('ClaudeAgentTeamsService', () => {
     // Why: `cat` holds the placeholder pane open under sh; PowerShell's `cat` prompts for a path.
     expect(splitCalls[0]?.command).toBe('Wait-Event')
     expect(splitCalls.at(-1)?.command).toBe(
-      "Set-Location 'C:\\repo'; $env:CLAUDECODE = '1'; & 'C:\\claude.exe' --% --agent-id a"
+      "Set-Location 'C:\\repo'; $env:CLAUDECODE = '1'; if (" +
+        "[version]($PSVersionTable.PSVersion.ToString().Split('-')[0]) -ge [version]'7.3.0'" +
+        ") { $PSNativeCommandArgumentPassing = 'Standard'; & 'C:\\claude.exe' '--agent-id' 'a' } " +
+        "else { & 'C:\\claude.exe' '--agent-id' 'a' }"
     )
   })
 

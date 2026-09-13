@@ -173,8 +173,6 @@ function pathEnvKey(): string {
   return Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH'
 }
 
-test.describe.configure({ mode: 'serial' })
-
 // Why: skip before the fixtures launch Electron; on other platforms there is nothing to prove here.
 test.skip(!enabled, 'Windows-only; set ORCA_E2E_WINDOWS_CLI_LAUNCHER to the compiled launcher')
 
@@ -208,9 +206,11 @@ async function verifyNativeTeammate(args: {
   electronApp: ElectronApplication
   orcaPage: Page
   testRepoPath: string
+  /** Which PowerShell hosts the panes; `auto` is Orca's default (pwsh when installed). */
+  powerShell?: 'powershell.exe' | 'pwsh.exe'
   launchLeader: (client: RuntimeClient, worktreeSelector: string) => Promise<LeaderLaunch>
 }): Promise<void> {
-  const { slug, electronApp, orcaPage, testRepoPath, launchLeader } = args
+  const { slug, electronApp, orcaPage, testRepoPath, launchLeader, powerShell } = args
   const { leaderLogPath, teammateMarkerPath } = runPaths(slug)
   await waitForSessionReady(orcaPage)
   // Why: the runtime RPC takes explicit selectors; `active` is a CLI-side alias.
@@ -219,6 +219,10 @@ async function verifyNativeTeammate(args: {
   rmSync(userDataLink, { recursive: true, force: true })
   symlinkSync(userDataDir, userDataLink, 'junction')
   const client = new RuntimeClient(userDataDir, 30_000, null, null)
+  if (powerShell) {
+    // Why: the re-spelled teammate command branches on the PowerShell generation; both must land the argv intact.
+    await client.call('settings.update', { terminalWindowsPowerShellImplementation: powerShell })
+  }
 
   writeFileSync(
     path.join(fakeCliDir, 'fake-claude.cjs'),
@@ -296,29 +300,37 @@ async function verifyNativeTeammate(args: {
   await expect.poll(() => countVisibleTerminalPanes(orcaPage), { timeout: 30_000 }).toBe(2)
 }
 
-test('a Claude teammate lands in a native Orca pane on Windows (runtime-created leader)', async ({
-  electronApp,
-  orcaPage,
-  testRepoPath
-}) => {
-  test.setTimeout(180_000)
-  await verifyNativeTeammate({
-    slug: 'rpc',
+async function launchLeaderThroughRuntime(
+  client: RuntimeClient,
+  worktreeSelector: string
+): Promise<LeaderLaunch> {
+  const created = await client.call<{ terminal: RuntimeTerminalCreate }>('terminal.create', {
+    worktree: worktreeSelector,
+    title: 'Agent Teams leader',
+    // Why: a background (runtime-owned) create returns the handle immediately; the
+    // renderer-backed `focus` path timed out waiting for the pane handle on the runner.
+    command: 'claude --teammate-mode auto'
+  })
+  return { handle: created.result.terminal.handle, tabId: created.result.terminal.tabId }
+}
+
+for (const powerShell of ['pwsh.exe', 'powershell.exe'] as const) {
+  test(`a Claude teammate lands in a native Orca pane on Windows (${powerShell} panes)`, async ({
     electronApp,
     orcaPage,
-    testRepoPath,
-    launchLeader: async (client, worktreeSelector) => {
-      const created = await client.call<{ terminal: RuntimeTerminalCreate }>('terminal.create', {
-        worktree: worktreeSelector,
-        title: 'Agent Teams leader',
-        // Why: a background (runtime-owned) create returns the handle immediately; the
-        // renderer-backed `focus` path timed out waiting for the pane handle on the runner.
-        command: 'claude --teammate-mode auto'
-      })
-      return { handle: created.result.terminal.handle, tabId: created.result.terminal.tabId }
-    }
+    testRepoPath
+  }) => {
+    test.setTimeout(180_000)
+    await verifyNativeTeammate({
+      slug: `rpc-${powerShell.replace('.exe', '')}`,
+      electronApp,
+      orcaPage,
+      testRepoPath,
+      powerShell,
+      launchLeader: launchLeaderThroughRuntime
+    })
   })
-})
+}
 
 test('the "Claude Agent Teams" catalog entry opens a native-pane team on Windows', async ({
   electronApp,
