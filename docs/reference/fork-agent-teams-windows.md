@@ -1,7 +1,10 @@
 # Claude Agent Teams con paneles nativos en Windows (fork)
 
-**Estado (2026-09-12):** implementado en la rama `feat/agent-teams-windows` del fork
-`jotit4/orca`. Upstream (`stablyai/orca`) NO lo tiene: al 12/09 sigue forzando
+**Estado (2026-09-13):** implementado y **validado end-to-end en Windows real** (runner
+`windows-2022` de GitHub Actions, run 25 del workflow: los tres tests E2E en verde — camino RPC
+con pwsh 7, camino RPC con PowerShell 5.1 y camino del menú "Claude Agent Teams"). Rama
+`feat/agent-teams-windows` del fork `jotit4/orca`. Instalador validado: artefacto
+`orca-windows-setup-unsigned-25` de https://github.com/jotit4/orca/actions/runs/34734403880. Upstream (`stablyai/orca`) NO lo tiene: al 12/09 sigue forzando
 `--teammate-mode in-process` en `win32` (issues #15503 y #15751; PRs #15753 y #16116
 abiertos sin merge desde el 23/08).
 
@@ -124,12 +127,21 @@ launcher con `csc.exe` y verifica que `tmux.exe` reenvíe `['agent-teams-tmux', 
 ## Validado en Windows real (runner windows-2022, 2026-09-13)
 
 El E2E `tests/e2e/claude-agent-teams-windows-native-panes.spec.ts` pasa en la VM de GitHub
-para **pwsh 7 y para Windows PowerShell 5.1** (run 19 y 20 del workflow): Orca real, un
+para **pwsh 7, Windows PowerShell 5.1 y el camino del menú New tab → "Claude Agent Teams"**
+(run 25 del workflow, los tres en verde): Orca real, un
 `claude` falso que replica las llamadas tmux de Claude Code 2.1.270, y un teammate falso que
 deja por escrito lo que recibió. El argv llega intacto en las dos generaciones, incluidos
 `say "hi" | a;b` y `C:\a b\`, y el teammate aparece como segundo pane del tab del líder.
 
-Dos hallazgos de esa validación:
+Tres arreglos que salieron de esa validación y que aplican también al instalador:
+
+- `prepareClaudeAgentTeamsLeaderForHandle` (camino de lanzamiento desde el renderer) no
+  instalaba `tmux.exe`; ahora usa el mismo contrato que el plan de lanzamiento.
+- El shim `agent-teams-tmux` tenía 10 s de espera al runtime; en Windows `split-window`
+  espera la carga del perfil de PowerShell y superaba ese presupuesto (upstream #13050). Ahora 60 s.
+- El runtime esperaba 10 s a que el renderer materializara la hoja del split; ahora 45 s.
+
+Dos hallazgos más:
 
 - **`--%` NO sirve en pwsh 7.** El diseño inicial usaba el stop-parsing token; en 7.3+ el
   texto posterior se parte por espacios y se vuelve a citar (se vio en la línea de comandos
@@ -166,7 +178,7 @@ rejection en el bootstrap y **el main process sigue vivo pero nunca abre la vent
 vio primero en el runner de GitHub (Playwright: "firstWindow: Timeout 120000ms") y aplica
 igual a un instalador del fork en una máquina donde Orca nunca corrió. Cherry-pickeados
 #14173 entero y el hunk de `secure-file.ts` de #14235. **Los instaladores de los runs 1 a 3
-del workflow tienen el bug; usar uno posterior al commit `2025d2046d`.**
+del workflow tienen el bug; usar el del run 25 o posterior.**
 
 Cómo se diagnosticó: lanzando Electron a mano en el runner con `ORCA_STARTUP_DIAGNOSTICS=1`
 y el home aislado que exige `configureDevUserDataPath` (`ORCA_E2E_USER_DATA_DIR`,
