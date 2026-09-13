@@ -39,7 +39,10 @@ export async function ensureClaudeAgentTeamsShimDir(
   await writeIfChanged(join(root, 'tmux'), unixShimScript())
   if (process.platform === 'win32') {
     await writeIfChanged(join(root, 'tmux.cmd'), windowsShimScript())
-    await installWindowsShimExecutable(root, opts?.windowsLauncher ?? bundledLauncherPath())
+    await installWindowsShimExecutable(
+      root,
+      opts?.windowsLauncher ?? process.env.ORCA_AGENT_TEAMS_SHIM_BIN ?? bundledLauncherPath()
+    )
   }
   return root
 }

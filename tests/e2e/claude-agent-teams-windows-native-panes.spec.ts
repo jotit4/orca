@@ -121,7 +121,7 @@ function fakeClaudeSource(cwd: string, leaderLogPath: string, teammateMarkerPath
     `  tmux(["respawn-pane", "-k", "-t", pane, "--", ${JSON.stringify(teammateCommand)}]); calls.push(["respawn-pane"]);`,
     `  log({ ok: true, leader, pane, calls, argv: process.argv.slice(2), env: ${pick(TRACKED_ENV)}, path: process.env.PATH ?? process.env.Path ?? null });`,
     '} catch (error) {',
-    '  log({ ok: false, calls, error: String(error && error.stack || error), stdout: String(error && error.stdout || ""), stderr: String(error && error.stderr || ""), path: process.env.PATH ?? process.env.Path ?? null });',
+    `  log({ ok: false, calls, error: String(error && error.stack || error), stdout: String(error && error.stdout || ""), stderr: String(error && error.stderr || ""), argv: process.argv.slice(2), env: ${pick(TRACKED_ENV)}, path: process.env.PATH ?? process.env.Path ?? null });`,
     '}',
     'process.stdout.write("FAKE_CLAUDE_LEADER_READY\\n");',
     'setInterval(() => {}, 1000);'

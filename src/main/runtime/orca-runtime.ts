@@ -27434,8 +27434,12 @@ export class OrcaRuntimeService {
       ...process.env,
       ...args.baseEnv
     }
-    const shimDir = await ensureClaudeAgentTeamsShimDir()
     const shimBin = resolveClaudeAgentTeamsShimBin(baseEnv)
+    // Why: same contract as buildClaudeAgentTeamsLaunchPlan — on Windows the spawnable
+    // tmux.exe shim is a copy of the launcher this team publishes, so a renderer-launched
+    // leader gets it too (the packaged launcher is the default; unpackaged builds point
+    // ORCA_AGENT_TEAMS_SHIM_BIN at a built one).
+    const shimDir = await ensureClaudeAgentTeamsShimDir(undefined, { windowsLauncher: shimBin })
     return this.claudeAgentTeams.createLaunchEnv({
       leaderHandle: args.handle,
       // Why (#11739): best-effort — a freshly pre-allocated handle may not have
