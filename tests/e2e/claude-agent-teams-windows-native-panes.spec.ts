@@ -220,7 +220,20 @@ async function verifyNativeTeammate(args: {
   await waitForSessionReady(orcaPage)
   // Why: the runtime RPC takes explicit selectors; `active` is a CLI-side alias.
   const worktreeSelector = `id:${await waitForActiveWorktree(orcaPage)}`
-  const userDataDir = await electronApp.evaluate(({ app }) => app.getPath('userData'))
+  // Why: right after session-ready the main-process evaluation context can still be
+  // recycled once ("Execution context was destroyed"); the value itself is stable.
+  let userDataDir = ''
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      userDataDir = await electronApp.evaluate(({ app }) => app.getPath('userData'))
+      break
+    } catch (error) {
+      if (attempt >= 4) {
+        throw error
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+  }
   rmSync(userDataLink, { recursive: true, force: true })
   symlinkSync(userDataDir, userDataLink, 'junction')
   const client = new RuntimeClient(userDataDir, 30_000, null, null)

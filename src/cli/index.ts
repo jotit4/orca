@@ -137,9 +137,16 @@ async function runClaudeTeams(argv: string[], cwd: string): Promise<void> {
   }
 }
 
+const AGENT_TEAMS_TMUX_COMPAT_TIMEOUT_MS = 60_000
+
 async function runAgentTeamsTmuxShim(argv: string[]): Promise<void> {
   try {
     const client = new (await loadRuntimeClientClass())(undefined, 10_000)
+    // Why: split-window / respawn-pane wait for a real pane to come up — on
+    // Windows that is a PowerShell profile load plus the renderer materializing
+    // the leaf, which exceeded the old 10s budget on a slow host (#13050). A
+    // reply that arrives late is still the right reply; failing early leaves a
+    // half-created teammate pane behind.
     const response = await client.call<{
       tmux: { stdout: string; stderr: string; exitCode: number }
     }>(
@@ -151,7 +158,7 @@ async function runAgentTeamsTmuxShim(argv: string[]): Promise<void> {
         cwd: process.cwd(),
         argv
       },
-      { timeoutMs: 10_000 }
+      { timeoutMs: AGENT_TEAMS_TMUX_COMPAT_TIMEOUT_MS }
     )
     process.stdout.write(response.result.tmux.stdout)
     process.stderr.write(response.result.tmux.stderr)
