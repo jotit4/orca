@@ -11,6 +11,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import type { ElectronApplication, Page } from '@stablyai/playwright-test'
 import { test, expect } from './helpers/orca-app'
 import { RuntimeClient } from '../../src/cli/runtime-client'
 import type { RuntimeTerminalCreate, RuntimeTerminalSummary } from '../../src/shared/runtime-types'
@@ -51,9 +52,14 @@ const launcherBinDir = path.join(appDir, 'resources', 'bin')
 const publishedLauncher = path.join(launcherBinDir, 'orca.exe')
 const fakeCliDir = fixtureRoot ? path.join(fixtureRoot, 'claude-bin') : ''
 const userDataLink = fixtureRoot ? path.join(fixtureRoot, 'user-data') : ''
-const leaderLogPath = fixtureRoot ? path.join(fixtureRoot, 'leader.json') : ''
-const teammateMarkerPath = fixtureRoot ? path.join(fixtureRoot, 'teammate.json') : ''
 const teammateScriptPath = path.join(fakeCliDir, 'fake-teammate.cjs')
+
+function runPaths(slug: string): { leaderLogPath: string; teammateMarkerPath: string } {
+  return {
+    leaderLogPath: path.join(fixtureRoot ?? '', `${slug}-leader.json`),
+    teammateMarkerPath: path.join(fixtureRoot ?? '', `${slug}-teammate.json`)
+  }
+}
 
 const TEAMMATE_ARGS = [
   '--agent-name',
@@ -88,13 +94,14 @@ function shQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`
 }
 
-function fakeClaudeSource(cwd: string): string {
+function fakeClaudeSource(cwd: string, leaderLogPath: string, teammateMarkerPath: string): string {
   // Verbatim shape of Claude Code's tmux backend: leader pane id, a `cat`
   // placeholder split, remain-on-exit, then respawn-pane with the sh command.
+  // ORCA_E2E_TEAMMATE_MARKER rides along like any env assignment Claude forwards.
   const teammateCommand = [
     `cd ${shQuote(cwd)}`,
     '&&',
-    'env CLAUDECODE=1 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1',
+    `env CLAUDECODE=1 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 ORCA_E2E_TEAMMATE_MARKER=${shQuote(teammateMarkerPath)}`,
     shQuote(process.execPath),
     shQuote(teammateScriptPath),
     ...TEAMMATE_ARGS.map((arg) => (/[\s"'|;\\]/.test(arg) ? shQuote(arg) : arg))
@@ -123,7 +130,7 @@ function fakeClaudeSource(cwd: string): string {
 function fakeTeammateSource(): string {
   return [
     'const fs = require("node:fs");',
-    `fs.writeFileSync(${JSON.stringify(teammateMarkerPath)}, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), env: ${pick(TRACKED_ENV)} }, null, 2));`,
+    `fs.writeFileSync(process.env.ORCA_E2E_TEAMMATE_MARKER, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), env: ${pick(TRACKED_ENV)} }, null, 2));`,
     'process.stdout.write("ORCA_NATIVE_TEAMMATE_OK\\n");',
     'setInterval(() => {}, 1000);'
   ].join('\n')
@@ -170,7 +177,9 @@ test.use({
   orcaAppExtraEnv: enabled
     ? {
         // Why: the fake claude must be what `claude --teammate-mode auto` resolves to in the pane.
-        [pathEnvKey()]: `${fakeCliDir}${path.delimiter}${process.env[pathEnvKey()] ?? ''}`,
+        [pathEnvKey()]: [fakeCliDir, path.join(process.cwd(), 'out', 'bin'), process.env[pathEnvKey()] ?? ''].join(
+          path.delimiter
+        ),
         // Why: unpackaged builds have no bundled launcher; this is the absolute CLI the team publishes.
         ORCA_AGENT_TEAMS_SHIM_BIN: publishedLauncher,
         // Why: the shim's CLI needs the runtime metadata of THIS app instance; the
@@ -186,13 +195,17 @@ test.afterAll(() => {
   }
 })
 
-test('a Claude teammate lands in a native Orca pane on Windows', async ({
-  electronApp,
-  orcaPage,
-  testRepoPath
-}) => {
-  test.setTimeout(180_000)
+type LeaderLaunch = { handle: string; tabId: string | null | undefined }
 
+async function verifyNativeTeammate(args: {
+  slug: string
+  electronApp: ElectronApplication
+  orcaPage: Page
+  testRepoPath: string
+  launchLeader: (client: RuntimeClient, worktreeSelector: string) => Promise<LeaderLaunch>
+}): Promise<void> {
+  const { slug, electronApp, orcaPage, testRepoPath, launchLeader } = args
+  const { leaderLogPath, teammateMarkerPath } = runPaths(slug)
   await waitForSessionReady(orcaPage)
   // Why: the runtime RPC takes explicit selectors; `active` is a CLI-side alias.
   const worktreeSelector = `id:${await waitForActiveWorktree(orcaPage)}`
@@ -201,16 +214,12 @@ test('a Claude teammate lands in a native Orca pane on Windows', async ({
   symlinkSync(userDataDir, userDataLink, 'junction')
   const client = new RuntimeClient(userDataDir, 30_000, null, null)
 
-  writeFileSync(path.join(fakeCliDir, 'fake-claude.cjs'), fakeClaudeSource(testRepoPath))
+  writeFileSync(
+    path.join(fakeCliDir, 'fake-claude.cjs'),
+    fakeClaudeSource(testRepoPath, leaderLogPath, teammateMarkerPath)
+  )
 
-  const created = await client.call<{ terminal: RuntimeTerminalCreate }>('terminal.create', {
-    worktree: worktreeSelector,
-    title: 'Agent Teams leader',
-    // Why: a background (runtime-owned) create returns the handle immediately; the
-    // renderer-backed `focus` path timed out waiting for the pane handle on the runner.
-    command: 'claude --teammate-mode auto'
-  })
-  const leader = created.result.terminal
+  const leader = await launchLeader(client, worktreeSelector)
 
   // 1. The leader ran, and every tmux call reached Orca through tmux.exe.
   await expect
@@ -263,16 +272,72 @@ test('a Claude teammate lands in a native Orca pane on Windows', async ({
   expect(teammate.env.ORCA_AGENT_TEAMS_TEAM_ID).toBe(leaderLog.env?.ORCA_AGENT_TEAMS_TEAM_ID)
 
   // 3. The teammate is a real second pane of the leader's tab, in the runtime and on screen.
-  await expect
-    .poll(
-      async () => {
-        const listed = await client.call<{ terminals: RuntimeTerminalSummary[] }>('terminal.list', {
-          worktree: worktreeSelector
-        })
-        return listed.result.terminals.filter((terminal) => terminal.tabId === leader.tabId).length
-      },
-      { timeout: 30_000 }
-    )
-    .toBe(2)
+  if (leader.tabId) {
+    await expect
+      .poll(
+        async () => {
+          const listed = await client.call<{ terminals: RuntimeTerminalSummary[] }>('terminal.list', {
+            worktree: worktreeSelector
+          })
+          return listed.result.terminals.filter((terminal) => terminal.tabId === leader.tabId).length
+        },
+        { timeout: 30_000 }
+      )
+      .toBe(2)
+  }
   await expect.poll(() => countVisibleTerminalPanes(orcaPage), { timeout: 30_000 }).toBe(2)
+}
+
+test('a Claude teammate lands in a native Orca pane on Windows (runtime-created leader)', async ({
+  electronApp,
+  orcaPage,
+  testRepoPath
+}) => {
+  test.setTimeout(180_000)
+  await verifyNativeTeammate({
+    slug: 'rpc',
+    electronApp,
+    orcaPage,
+    testRepoPath,
+    launchLeader: async (client, worktreeSelector) => {
+      const created = await client.call<{ terminal: RuntimeTerminalCreate }>('terminal.create', {
+        worktree: worktreeSelector,
+        title: 'Agent Teams leader',
+        // Why: a background (runtime-owned) create returns the handle immediately; the
+        // renderer-backed `focus` path timed out waiting for the pane handle on the runner.
+        command: 'claude --teammate-mode auto'
+      })
+      return { handle: created.result.terminal.handle, tabId: created.result.terminal.tabId }
+    }
+  })
+})
+
+test('the "Claude Agent Teams" catalog entry opens a native-pane team on Windows', async ({
+  electronApp,
+  orcaPage,
+  testRepoPath
+}) => {
+  test.setTimeout(180_000)
+  await verifyNativeTeammate({
+    slug: 'menu',
+    electronApp,
+    orcaPage,
+    testRepoPath,
+    // Why: this is the path a user takes — New tab → Claude Agent Teams — which on
+    // Windows launches `claude --teammate-mode auto` through the renderer.
+    launchLeader: async () => {
+      await orcaPage.getByRole('button', { name: 'New tab' }).click({ force: true })
+      const entry = orcaPage.getByRole('menuitem', { name: 'Claude Agent Teams', exact: true })
+      await expect(entry, 'catalog entry missing: is orca-dev/claude detected on PATH?').toBeVisible({
+        timeout: 30_000
+      })
+      await entry.click({ force: true })
+      const tabId = await orcaPage.evaluate(() => {
+        const state = window.__store?.getState()
+        const worktreeId = state?.activeWorktreeId
+        return worktreeId ? (state?.activeTabIdByWorktree?.[worktreeId] ?? null) : null
+      })
+      return { handle: '', tabId }
+    }
+  })
 })
