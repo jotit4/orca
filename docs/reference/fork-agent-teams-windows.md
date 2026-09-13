@@ -20,11 +20,10 @@ Tres cosas lo impedían y las tres están resueltas (base: PR upstream #15753):
 2. **El comando del pane venía escrito para `/bin/sh`.** Claude Code emite
    `cd 'E:\repo' && env CLAUDECODE=1 'C:\...\claude.exe' --agent-name X ...`. Orca lo
    re-escribe para PowerShell: `Set-Location 'E:\repo'; $env:CLAUDECODE = '1'; & 'C:\...\claude.exe' --% --agent-name X ...`.
-   El `--%` (stop-parsing) es deliberado: PowerShell 5.1 rompe cualquier argumento nativo
-   que traiga `"`; con `--%` el resto de la línea llega verbatim al ejecutable y el quoting
-   lo hace Orca con las reglas de CommandLineToArgvW (`quoteWindowsCommandLineArg`). Si un
-   argumento trae `%` o salto de línea (los dos puntos ciegos de `--%`) se usa la forma
-   con comillas simples de PowerShell.
+   Los argumentos se pasan según la generación de PowerShell que ejecuta el comando (ver
+   "Validado en Windows real"): en 7.3+ con `$PSNativeCommandArgumentPassing = 'Standard'` y
+   valores reales; en 5.1 pre-escapados (`legacyPowerShellNativeArg`), porque 5.1 sólo envuelve
+   en comillas si hay espacios y nunca escapa `"` internas.
    El `cat` que Claude usa como placeholder pasa a `Wait-Event` (en PowerShell `cat` es
    `Get-Content` y pide un path).
 3. **`orca claude-teams` tiraba `unsupported_platform`.** Quitado, y `win32` ya no está en
@@ -121,6 +120,32 @@ en el plan de lanzamiento).
 El test `forwards tmux argv to the CLI when copied into the Agent Teams shim dir`
 (`config/scripts/build-windows-cli-launcher.test.mjs`) sólo corre en Windows: compila el
 launcher con `csc.exe` y verifica que `tmux.exe` reenvíe `['agent-teams-tmux', ...]`.
+
+## Validado en Windows real (runner windows-2022, 2026-09-13)
+
+El E2E `tests/e2e/claude-agent-teams-windows-native-panes.spec.ts` pasa en la VM de GitHub
+para **pwsh 7 y para Windows PowerShell 5.1** (run 19 y 20 del workflow): Orca real, un
+`claude` falso que replica las llamadas tmux de Claude Code 2.1.270, y un teammate falso que
+deja por escrito lo que recibió. El argv llega intacto en las dos generaciones, incluidos
+`say "hi" | a;b` y `C:\a b\`, y el teammate aparece como segundo pane del tab del líder.
+
+Dos hallazgos de esa validación:
+
+- **`--%` NO sirve en pwsh 7.** El diseño inicial usaba el stop-parsing token; en 7.3+ el
+  texto posterior se parte por espacios y se vuelve a citar (se vio en la línea de comandos
+  cruda del hijo). La versión final emite el comando dos veces y el shell elige:
+  `if ([version](...) -ge [version]'7.3.0') { $PSNativeCommandArgumentPassing = 'Standard'; & exe 'a' … } else { & exe 'a-preescapado' … }`.
+- **El pane del teammate no hereda el env del team** (`TMUX_PANE`, `ORCA_AGENT_TEAMS_*`): el
+  split que pasa por el renderer reenvía `command` pero no `env`. Es comportamiento
+  preexistente de upstream en todas las plataformas; Claude teammate no lo necesita.
+
+## Gotcha: "Claude Agent Teams" oculto en perfiles viejos
+
+`persistence.ts` migra los perfiles anteriores al default-on agregando `claude-agent-teams`
+a `disabledTuiAgents`. Si Orca ya había corrido alguna vez en la notebook (aunque fuera la
+versión de upstream), la entrada no aparece en el menú New tab aunque esté detectada:
+**Settings → Agents → habilitar Claude Agent Teams**. En una instalación limpia viene
+habilitado.
 
 ## E2E en la VM de Windows de GitHub Actions
 
