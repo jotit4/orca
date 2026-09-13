@@ -206,8 +206,9 @@ test('a Claude teammate lands in a native Orca pane on Windows', async ({
   const created = await client.call<{ terminal: RuntimeTerminalCreate }>('terminal.create', {
     worktree: worktreeSelector,
     title: 'Agent Teams leader',
-    command: 'claude --teammate-mode auto',
-    focus: true
+    // Why: a background (runtime-owned) create returns the handle immediately; the
+    // renderer-backed `focus` path timed out waiting for the pane handle on the runner.
+    command: 'claude --teammate-mode auto'
   })
   const leader = created.result.terminal
 
