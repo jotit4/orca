@@ -296,10 +296,13 @@ async function verifyNativeTeammate(args: {
   expect(realpathSync.native(teammate.cwd).toLowerCase()).toBe(
     realpathSync.native(testRepoPath).toLowerCase()
   )
-  expect(teammate.env.CLAUDECODE).toBe('1')
-  expect(teammate.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS).toBe('1')
-  expect(teammate.env.TMUX_PANE).toBe(leaderLog.pane)
-  expect(teammate.env.ORCA_AGENT_TEAMS_TEAM_ID).toBe(leaderLog.env?.ORCA_AGENT_TEAMS_TEAM_ID)
+  const teammateContext = JSON.stringify({ teammate, leader: leaderLog }, null, 2)
+  expect(teammate.env.CLAUDECODE, teammateContext).toBe('1')
+  expect(teammate.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS, teammateContext).toBe('1')
+  expect(teammate.env.TMUX_PANE, teammateContext).toBe(leaderLog.pane)
+  expect(teammate.env.ORCA_AGENT_TEAMS_TEAM_ID, teammateContext).toBe(
+    leaderLog.env?.ORCA_AGENT_TEAMS_TEAM_ID
+  )
 
   // 3. The teammate is a real second pane of the leader's tab, in the runtime and on screen.
   if (leader.tabId) {
@@ -366,9 +369,12 @@ test('the "Claude Agent Teams" catalog entry opens a native-pane team on Windows
     launchLeader: async () => {
       await orcaPage.getByRole('button', { name: 'New tab' }).click({ force: true })
       const entry = orcaPage.getByRole('menuitem', { name: 'Claude Agent Teams', exact: true })
-      await expect(entry, 'catalog entry missing: is orca-dev/claude detected on PATH?').toBeVisible({
-        timeout: 30_000
-      })
+      const menuItems = async (): Promise<string[]> =>
+        orcaPage.getByRole('menuitem').allTextContents().catch(() => [])
+      await expect(
+        entry,
+        `catalog entry missing: is orca-dev/claude detected on PATH? menu: ${JSON.stringify(await menuItems())}`
+      ).toBeVisible({ timeout: 30_000 })
       await entry.click({ force: true })
       const tabId = await orcaPage.evaluate(() => {
         const state = window.__store?.getState()
