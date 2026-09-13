@@ -2674,6 +2674,8 @@ function getSetupRunnerCommandPlatformForLaunch(
   return getSetupRunnerCommandPlatformForPath(setup?.runnerScriptPath ?? '', fallbackPlatform)
 }
 
+const RENDERER_SPLIT_LEAF_TIMEOUT_MS = 45_000
+
 export class OrcaRuntimeService {
   private readonly runtimeId = randomUUID()
   private readonly startedAt = Date.now()
@@ -27247,7 +27249,15 @@ export class OrcaRuntimeService {
         telemetrySource: opts.telemetrySource
       })
 
-      const newHandle = await this.waitForNewLeafInTab(leaf.tabId, leafKeysBefore)
+      // Why: the renderer has to mount the leaf and spawn its PTY before a handle exists;
+      // on Windows that includes a PowerShell profile load, which pushed a teammate split
+      // past the old 10s on a slow host ("Timed out waiting for split pane handle"). A
+      // late handle is still the right handle; a premature timeout strands the pane.
+      const newHandle = await this.waitForNewLeafInTab(
+        leaf.tabId,
+        leafKeysBefore,
+        RENDERER_SPLIT_LEAF_TIMEOUT_MS
+      )
       return { handle: newHandle, tabId: leaf.tabId, paneRuntimeId: leaf.paneRuntimeId }
     } finally {
       releaseSplitSlot()
