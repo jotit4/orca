@@ -383,6 +383,16 @@ test('the "Claude Agent Teams" catalog entry opens a native-pane team on Windows
     // Why: this is the path a user takes — New tab → Claude Agent Teams — which on
     // Windows launches `claude --teammate-mode auto` through the renderer.
     launchLeader: async () => {
+      // Why: the persistence migration keeps "Claude Agent Teams" hidden for profiles
+      // that predate its default-on (the seeded E2E profile is one); a user enables it
+      // under Settings → Agents, which is what this does.
+      await orcaPage.evaluate(() => {
+        const state = window.__store?.getState()
+        const disabled = (state?.settings?.disabledTuiAgents ?? []).filter(
+          (agent: string) => agent !== 'claude-agent-teams'
+        )
+        return state?.updateSettings({ disabledTuiAgents: disabled })
+      })
       // Why: the menu lists what detection has reported so far; wait for the
       // catalog id before opening it instead of racing the startup probe.
       await expect
@@ -400,12 +410,12 @@ test('the "Claude Agent Teams" catalog entry opens a native-pane team on Windows
       const diagnostics = async (): Promise<string> => {
         const menu = await orcaPage.getByRole('menuitem').allTextContents().catch(() => [])
         const detected = await orcaPage.evaluate(() => {
-          const state = (window.__store?.getState() ?? {}) as Record<string, unknown>
-          return Object.fromEntries(
-            Object.entries(state).filter(
-              ([key, value]) => /detect/i.test(key) && typeof value !== 'function'
-            )
-          )
+          const state = window.__store?.getState()
+          return {
+            detectedAgentIds: state?.detectedAgentIds ?? null,
+            disabledTuiAgents: state?.settings?.disabledTuiAgents ?? null,
+            defaultTuiAgent: state?.settings?.defaultTuiAgent ?? null
+          }
         })
         let where = ''
         try {
