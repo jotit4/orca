@@ -283,7 +283,9 @@ async function verifyNativeTeammate(args: {
     stderr?: string
   }
   expect(leaderLog, JSON.stringify(leaderLog, null, 2)).toMatchObject({ ok: true })
-  expect(leaderLog.argv).toEqual(['--teammate-mode', 'auto'])
+  // Why: a renderer launch appends Orca's configured agent args (e.g. the permission
+  // mode flag); the contract is that the teammate-mode flag reaches the leader.
+  expect((leaderLog.argv ?? []).join(' ')).toContain('--teammate-mode auto')
   expect(leaderLog.env?.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS).toBe('1')
   expect(leaderLog.env?.TMUX_PANE).toBe(leaderLog.leader)
   expect(leaderLog.env?.ORCA_AGENT_TEAMS_SHIM_BIN).toBe(publishedLauncher)
