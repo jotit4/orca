@@ -383,8 +383,20 @@ test('the "Claude Agent Teams" catalog entry opens a native-pane team on Windows
     // Why: this is the path a user takes — New tab → Claude Agent Teams — which on
     // Windows launches `claude --teammate-mode auto` through the renderer.
     launchLeader: async () => {
+      // Why: the menu lists what detection has reported so far; wait for the
+      // catalog id before opening it instead of racing the startup probe.
+      await expect
+        .poll(
+          () =>
+            orcaPage.evaluate(
+              () => window.__store?.getState().detectedAgentIds?.includes('claude-agent-teams') ?? false
+            ),
+          { timeout: 60_000, message: 'claude-agent-teams never showed up in detectedAgentIds' }
+        )
+        .toBe(true)
       await orcaPage.getByRole('button', { name: 'New tab' }).click({ force: true })
-      const entry = orcaPage.getByRole('menuitem', { name: 'Claude Agent Teams', exact: true })
+      // Why: a menu item's accessible name may carry a shortcut suffix; match the label prefix.
+      const entry = orcaPage.getByRole('menuitem', { name: /^Claude Agent Teams/ })
       const diagnostics = async (): Promise<string> => {
         const menu = await orcaPage.getByRole('menuitem').allTextContents().catch(() => [])
         const detected = await orcaPage.evaluate(() => {
