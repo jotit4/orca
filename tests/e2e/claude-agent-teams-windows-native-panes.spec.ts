@@ -130,7 +130,13 @@ function fakeClaudeSource(cwd: string, leaderLogPath: string, teammateMarkerPath
 function fakeTeammateSource(): string {
   return [
     'const fs = require("node:fs");',
-    `fs.writeFileSync(process.env.ORCA_E2E_TEAMMATE_MARKER, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), env: ${pick(TRACKED_ENV)} }, null, 2));`,
+    'const { execFileSync } = require("node:child_process");',
+    // Why: the raw command line is the only way to tell whether PowerShell honoured `--%`
+    // or re-quoted the arguments before the child parsed them.
+    'let commandLine = null; let psVersion = null;',
+    'try { commandLine = execFileSync("powershell.exe", ["-NoProfile", "-Command", `(Get-CimInstance Win32_Process -Filter "ProcessId=${process.pid}").CommandLine`], { encoding: "utf8", windowsHide: true }).trim() } catch (error) { commandLine = String(error) }',
+    'try { psVersion = execFileSync("powershell.exe", ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"], { encoding: "utf8", windowsHide: true }).trim() } catch {}',
+    `fs.writeFileSync(process.env.ORCA_E2E_TEAMMATE_MARKER, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), env: ${pick(TRACKED_ENV)}, commandLine, psVersion, parentShell: process.env.PSModulePath ?? null }, null, 2));`,
     'process.stdout.write("ORCA_NATIVE_TEAMMATE_OK\\n");',
     'setInterval(() => {}, 1000);'
   ].join('\n')
@@ -260,8 +266,10 @@ async function verifyNativeTeammate(args: {
     argv: string[]
     cwd: string
     env: Record<string, string | null>
+    commandLine?: string | null
+    psVersion?: string | null
   }
-  expect(teammate.argv).toEqual(TEAMMATE_ARGS)
+  expect(teammate.argv, JSON.stringify(teammate, null, 2)).toEqual(TEAMMATE_ARGS)
   // Why: tmpdir paths can surface as 8.3 short names on Windows; compare canonical forms.
   expect(realpathSync.native(teammate.cwd).toLowerCase()).toBe(
     realpathSync.native(testRepoPath).toLowerCase()
