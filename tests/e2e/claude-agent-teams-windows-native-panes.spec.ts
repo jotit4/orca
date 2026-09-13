@@ -194,7 +194,8 @@ test('a Claude teammate lands in a native Orca pane on Windows', async ({
   test.setTimeout(180_000)
 
   await waitForSessionReady(orcaPage)
-  await waitForActiveWorktree(orcaPage)
+  // Why: the runtime RPC takes explicit selectors; `active` is a CLI-side alias.
+  const worktreeSelector = `id:${await waitForActiveWorktree(orcaPage)}`
   const userDataDir = await electronApp.evaluate(({ app }) => app.getPath('userData'))
   rmSync(userDataLink, { recursive: true, force: true })
   symlinkSync(userDataDir, userDataLink, 'junction')
@@ -203,7 +204,7 @@ test('a Claude teammate lands in a native Orca pane on Windows', async ({
   writeFileSync(path.join(fakeCliDir, 'fake-claude.cjs'), fakeClaudeSource(testRepoPath))
 
   const created = await client.call<{ terminal: RuntimeTerminalCreate }>('terminal.create', {
-    worktree: 'active',
+    worktree: worktreeSelector,
     title: 'Agent Teams leader',
     command: 'claude --teammate-mode auto',
     focus: true
@@ -265,7 +266,7 @@ test('a Claude teammate lands in a native Orca pane on Windows', async ({
     .poll(
       async () => {
         const listed = await client.call<{ terminals: RuntimeTerminalSummary[] }>('terminal.list', {
-          worktree: 'active'
+          worktree: worktreeSelector
         })
         return listed.result.terminals.filter((terminal) => terminal.tabId === leader.tabId).length
       },
