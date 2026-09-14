@@ -6,7 +6,7 @@ https://github.com/jotit4/orca/actions/runs/34861666477): E2E de tres caminos, t
 unitarios en Windows, build, y **gate sobre el `Orca.exe` empaquetado real con PowerShell
 5.1 y 7** (dos panes visibles, `list/send/capture/kill` sobre el pane tras el respawn, cwd
 literal con corchetes y apóstrofe, argv con argumento vacío, `orca.exe` empaquetado como
-shim). **Candidatos para la notebook (mismo árbol validado): `orca-windows-portable-30.zip` (portable, recomendado para la notebook del trabajo) y `orca-windows-setup-unsigned-30` (instalador NSIS), ambos de ese run.**
+shim). **Candidatos para la notebook (mismo árbol validado): `orca-windows-portable-29.zip` (portable, recomendado para la notebook del trabajo) y `orca-windows-setup-unsigned-29` (instalador NSIS), ambos de ese run.**
 Lo que falta para llamarlo versión laboral certificada es la aceptación manual en Windows
 10/11 con una sesión de Claude autenticada (ver "Criterio de promoción y rollback"). Rama
 `feat/agent-teams-windows` del fork `jotit4/orca`.
