@@ -11,6 +11,7 @@ import {
 } from '../../shared/claude-agent-teams-tmux-compat'
 import { supportsClaudeAgentTeamsPaneCommand } from '../../shared/claude-agent-teams-pane-command'
 import { getOrcaCliCommandNameForPlatform } from '../../shared/orca-cli-command-name'
+import { getPortableDataDir } from '../startup/portable-mode'
 import { resolveStartupShell, type AgentStartupShell } from '../../shared/tui-agent-startup-shell'
 
 export type ClaudeAgentTeamsLaunchPlan = {
@@ -185,6 +186,11 @@ export function resolveClaudeAgentTeamsShimBin(
 }
 
 function defaultShimRoot(): string {
+  // Why: a portable copy keeps the tmux shim with the rest of its state, not under %USERPROFILE%\.orca.
+  const portableDataDir = getPortableDataDir()
+  if (portableDataDir) {
+    return join(portableDataDir, 'claude-agent-teams-bin')
+  }
   return join(homedir(), '.orca', 'claude-agent-teams-bin')
 }
 

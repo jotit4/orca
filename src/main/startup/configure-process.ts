@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { getVersionManagerBinPaths } from '../codex-cli/command'
 import { getMainE2EConfig } from '../e2e-config'
+import { getPortableDataDir, portableUserDataPath } from './portable-mode'
 
 const DEV_PARENT_SHUTDOWN_GRACE_MS = 3000
 const HTTP1_COMPATIBILITY_ENV_VAR = 'ORCA_DISABLE_HTTP2'
@@ -154,6 +155,16 @@ export function configureDevUserDataPath(isDev: boolean): void {
     mkdirSync(e2eHomeDir, { recursive: true, mode: 0o700 })
     app.setPath('home', e2eHomeDir)
     app.setPath('userData', e2eConfig.userDataDir)
+    return
+  }
+
+  // Why: a portable zip copy keeps its profile next to the executable instead of
+  // %APPDATA%\orca, so nothing about it lands in the user's roaming profile.
+  const portableDataDir = getPortableDataDir()
+  if (portableDataDir) {
+    const userData = portableUserDataPath(portableDataDir)
+    mkdirSync(userData, { recursive: true })
+    app.setPath('userData', userData)
     return
   }
 

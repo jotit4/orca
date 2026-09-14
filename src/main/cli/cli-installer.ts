@@ -25,6 +25,7 @@ import {
   readWindowsUserPathRegistry,
   type WindowsUserPathReadResult
 } from './windows-user-path-registry'
+import { isPortableMode } from '../startup/portable-mode'
 
 const execFileAsync = promisify(execFile)
 const DEFAULT_MAC_COMMAND_PATH = '/usr/local/bin/orca'
@@ -834,6 +835,13 @@ export class CliInstaller {
   }
 
   private async ensureWindowsPathEntry(pathDirectory: string): Promise<void> {
+    // Why: editing the user's persisted PATH is the one thing a portable copy must never do;
+    // Orca's own terminals already carry the wrapper dir, so only outside shells miss it.
+    if (isPortableMode()) {
+      throw new Error(
+        `Orca is running as a portable copy and does not edit your user PATH. To use the orca CLI outside Orca terminals, add this folder to PATH yourself: ${pathDirectory}`
+      )
+    }
     const current = await this.readWindowsUserPathForMutation()
     const entries = splitPathEntries('win32', current.value)
     if (

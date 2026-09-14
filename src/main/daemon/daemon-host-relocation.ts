@@ -11,6 +11,7 @@ import {
 } from 'node:fs'
 import { dirname, join, win32 as winPath } from 'node:path'
 import { app } from 'electron'
+import { getPortableDataDir } from '../startup/portable-mode'
 import { parseDaemonPidFile, startTimeMatches } from './daemon-health'
 
 /**
@@ -200,6 +201,11 @@ function readMarker(dir: string): MaterializeMarker | null {
 }
 
 function hostRootDir(): string {
+  // Why: a portable copy must not leave its relocated daemon host under %LOCALAPPDATA%.
+  const portableDataDir = getPortableDataDir()
+  if (portableDataDir) {
+    return join(portableDataDir, 'daemon-host', HOST_SUBDIR)
+  }
   // Prefer LOCAL appData (see LOCAL_HOST_ROOT_NAME); fall back to userData only if LOCALAPPDATA is unset.
   const localAppData = process.env.LOCALAPPDATA
   const base =

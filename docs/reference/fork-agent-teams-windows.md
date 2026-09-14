@@ -60,6 +60,29 @@ POSIX propio en `src/shared/claude-agent-teams-pane-command.ts`
   npm real queda dentro de la aceptación manual.
 - El build del fork. **Los builds de upstream no sirven** (traen el gate).
 
+## Portable (sin instalador)
+
+El workflow también sube `orca-windows-portable-<n>.zip`: el mismo árbol `win-unpacked` que
+pasó el gate, más la carpeta marcador `orca-portable-data` junto a `Orca.exe`. Con ese
+marcador presente (`src/main/startup/portable-mode.ts`):
+
+- el perfil (`userData`) vive en `orca-portable-data\profile`, no en `%APPDATA%\orca`;
+- el daemon de terminales relocado vive en `orca-portable-data\daemon-host`, no en
+  `%LOCALAPPDATA%\Orca`;
+- el shim `tmux.exe` de Agent Teams vive en `orca-portable-data\claude-agent-teams-bin`;
+- "Instalar CLI" nunca edita el PATH del usuario en el registro (falla con un mensaje que
+  dice qué carpeta agregar a mano).
+
+Descomprimir en cualquier carpeta (por ejemplo `D:\tools\Orca`) y ejecutar `Orca.exe`. No
+hay entrada en "Programas y características", ni accesos directos, ni desinstalador: borrar
+la carpeta es desinstalar. Sólo Windows: el marcador se ignora en macOS y Linux.
+
+Lo que sigue quedando fuera de la carpeta: los hooks de estado de agentes que Orca instala
+para Claude Code (`%USERPROFILE%\.orca\agent-hooks` y la configuración de hooks de Claude
+Code), porque son parte de la integración con Claude, no de Orca. Y esto no oculta el proceso
+a un endpoint de seguridad ni cambia la exposición a AppLocker: un `.exe` sin firma en una
+carpeta de usuario es lo mismo que el instalador por usuario.
+
 ## Instalación
 
 1. Bajar el artefacto `orca-windows-setup-unsigned-<n>` del workflow

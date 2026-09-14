@@ -141,6 +141,44 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+      # Why: the portable zip is the same win-unpacked tree the gate just exercised,
+      # plus the `orca-portable-data` marker that keeps profile, daemon host and
+      # Agent Teams shim inside the folder (no installer, no Programs & Features
+      # entry, no shortcuts, no registry PATH edits).
+      - name: Package portable zip
+        shell: pwsh
+        run: |
+          $stage = Join-Path (Get-Location) 'dist\portable\Orca'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -Path 'dist\win-unpacked\*' -Destination $stage -Recurse -Force
+          $data = Join-Path $stage 'orca-portable-data'
+          New-Item -ItemType Directory -Force -Path $data | Out-Null
+          @(
+            'Orca portable (fork jotit4/orca, Claude Agent Teams con paneles nativos en Windows).',
+            '',
+            'Esta carpeta es el marcador de modo portable. Mientras exista junto a Orca.exe:',
+            '  - el perfil de Orca vive en orca-portable-data\profile (no en %APPDATA%\orca)',
+            '  - el daemon de terminales vive en orca-portable-data\daemon-host (no en %LOCALAPPDATA%\Orca)',
+            '  - el shim tmux.exe de Agent Teams vive en orca-portable-data\claude-agent-teams-bin',
+            '  - Orca nunca edita el PATH del usuario en el registro',
+            '',
+            'Para dejar de ser portable, borra esta carpeta (perdes el perfil que tenga adentro).',
+            'Para desinstalar, borra la carpeta Orca completa.',
+            '',
+            'Fuera de esta carpeta Orca sigue escribiendo lo que Claude Code necesita para el estado',
+            'de los agentes (hooks en %USERPROFILE%\.orca\agent-hooks y en la config de Claude Code).'
+          ) | Set-Content -Path (Join-Path $data 'LEEME.txt') -Encoding utf8
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath 'dist\orca-windows-portable.zip' -CompressionLevel Optimal
+          Get-Item 'dist\orca-windows-portable.zip' | Format-Table Name, Length
+
+      - name: Upload portable zip
+        uses: actions/upload-artifact@v7
+        with:
+          name: orca-windows-portable-${{ github.run_number }}
+          path: dist/orca-windows-portable.zip
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Upload installer
         uses: actions/upload-artifact@v7
         with:
