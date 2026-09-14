@@ -18,6 +18,7 @@ on:
 
 jobs:
   build-windows:
+    needs: e2e-windows-agent-teams
     # Why: windows-latest moved to the Windows 2025 / VS 2026 image before
     # node-gyp could detect VS 18, breaking native dependency install.
     runs-on: windows-2022
@@ -69,19 +70,26 @@ jobs:
         run: pnpm run typecheck
 
       - name: Windows Agent Teams tests
-        run: >-
-          pnpm exec vitest run --config config/vitest.config.ts
-          config/scripts/build-windows-cli-launcher.test.mjs
-          src/shared/claude-agent-teams-pane-command.test.ts
-          src/main/runtime/claude-agent-teams-shim-env.test.ts
-          src/main/runtime/claude-agent-teams-service.test.ts
-          src/main/runtime/claude-agent-teams-tmux-dispatcher.test.ts
-          src/cli/handlers/core.test.ts
-          src/main/ipc/tui-agent-detection-commands.test.ts
-          src/shared/tui-agent-startup.test.ts
-          src/main/ipc/preflight-agent-detection.test.ts
-          src/shared/windows-terminal-shell.test.ts
-          src/main/providers/local-pty-provider-windows-shell-launch.test.ts
+        shell: pwsh
+        run: |
+          $tests = @(
+            'config/scripts/build-windows-cli-launcher.test.mjs',
+            'src/shared/claude-agent-teams-pane-command.test.ts',
+            'src/shared/claude-agent-teams-launch-plan.test.ts',
+            'src/main/runtime/claude-agent-teams-shim-env.test.ts',
+            'src/main/runtime/claude-agent-teams-service.test.ts',
+            'src/main/runtime/orca-runtime.test.ts',
+            'src/cli/handlers/core.test.ts',
+            'src/main/ipc/pty.test.ts',
+            'src/main/ipc/tui-agent-detection-commands.test.ts',
+            'src/shared/tui-agent-startup.test.ts',
+            'src/shared/windows-terminal-shell.test.ts'
+          )
+          foreach ($test in $tests) {
+            if (-not (Test-Path -LiteralPath $test -PathType Leaf)) { throw "Test manifest references missing file: $test" }
+          }
+          pnpm exec vitest run --config config/vitest.config.ts @tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # Why: no ORCA_BUILD_IDENTITY / telemetry key on purpose. This is an
       # unofficial build: telemetry stays off and the updater treats it as such.
@@ -116,6 +124,18 @@ jobs:
             Get-Item -LiteralPath $file
           }
           Get-ChildItem dist -Filter *.exe | Format-Table Name, Length
+
+      - name: Gate packaged Agent Teams panes
+        run: node tests/tools/win-agent-teams-packaged/run.mjs dist/win-unpacked/Orca.exe
+
+      - name: Upload packaged gate evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-agent-teams-packaged-evidence-${{ github.run_number }}
+          path: test-results/windows-agent-teams-packaged/
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: Upload installer
         uses: actions/upload-artifact@v7
@@ -183,45 +203,6 @@ jobs:
         run: |
           if (-not (Test-Path -LiteralPath 'out/cli/index.js' -PathType Leaf)) { throw 'out/cli/index.js missing after the E2E build' }
           if (-not (Test-Path -LiteralPath 'native/windows-cli-launcher/.build/orca.exe' -PathType Leaf)) { throw 'launcher missing' }
-
-      # Why: Playwright saw Electron alive for 2 minutes with no window and no
-      # main-process output. Launch the same build by hand with Chromium logging
-      # to see where startup stalls before any spec runs.
-      - name: Startup diagnostic (Electron by hand, 60s)
-        shell: pwsh
-        env:
-          ORCA_E2E_HEADLESS: '1'
-          NODE_ENV: development
-          ELECTRON_ENABLE_LOGGING: '1'
-          ELECTRON_ENABLE_STACK_DUMPING: '1'
-        run: |
-          $env:ORCA_E2E_USER_DATA_DIR = Join-Path $env:TEMP 'orca-diag-userdata'
-          # Why: mirror the harness' home isolation, or configureDevUserDataPath refuses to start.
-          $env:ORCA_E2E_HOME_DIR = Join-Path $env:ORCA_E2E_USER_DATA_DIR 'home'
-          New-Item -ItemType Directory -Force -Path $env:ORCA_E2E_HOME_DIR | Out-Null
-          $env:USERPROFILE = $env:ORCA_E2E_HOME_DIR
-          $env:HOME = $env:ORCA_E2E_HOME_DIR
-          $env:ORCA_STARTUP_DIAGNOSTICS = '1'
-          $electron = Join-Path (Get-Location) 'node_modules\electron\dist\electron.exe'
-          Write-Host "electron: $electron"
-          $p = Start-Process -FilePath $electron -ArgumentList '.' -PassThru -NoNewWindow -RedirectStandardOutput diag-out.txt -RedirectStandardError diag-err.txt
-          Start-Sleep -Seconds 60
-          if (-not $p.HasExited) { Write-Host 'still running after 60s; killing'; Stop-Process -Id $p.Id -Force } else { Write-Host "exited: $($p.ExitCode)" }
-          Write-Host '----- stdout -----'; Get-Content diag-out.txt -ErrorAction SilentlyContinue | Select-Object -First 150
-          Write-Host '----- stderr -----'; Get-Content diag-err.txt -ErrorAction SilentlyContinue | Select-Object -First 150
-          Write-Host '----- userdata -----'; Get-ChildItem -Recurse $env:ORCA_E2E_USER_DATA_DIR -ErrorAction SilentlyContinue | Select-Object -First 40 | ForEach-Object { $_.FullName }
-          Get-ChildItem $env:ORCA_E2E_USER_DATA_DIR -Filter *.log -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "----- $($_.FullName) -----"; Get-Content $_.FullName | Select-Object -First 80 }
-
-      # Why: separates "the harness cannot open Orca on this runner" from "the
-      # Agent Teams spec fails" — the canary is an unrelated, simple spec.
-      - name: Harness canary (unrelated spec)
-        # Why: informational only now — run 9 proved the harness opens Orca on
-        # this runner; the canary spec itself has Windows-specific failures.
-        continue-on-error: true
-        env:
-          SKIP_BUILD: '1'
-          ORCA_E2E_FORWARD_APP_LOGS: '1'
-        run: pnpm run test:e2e tests/e2e/tab-rename.spec.ts --workers=1
 
       - name: Run Agent Teams native panes E2E
         env:
