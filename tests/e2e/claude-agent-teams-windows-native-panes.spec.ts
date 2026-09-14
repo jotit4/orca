@@ -313,12 +313,13 @@ async function verifyNativeTeammate(args: {
     realpathSync.native(testRepoPath).toLowerCase()
   )
   const teammateContext = JSON.stringify({ teammate, leader: leaderLog }, null, 2)
-  // Why: these ride in the command text Claude Code writes (`env CLAUDECODE=1 …`), so they
-  // must survive the re-spelling. The pane-level team env (TMUX_PANE, ORCA_AGENT_TEAMS_*) is
-  // NOT asserted: the renderer-driven split forwards `command` but not `env` — pre-existing
-  // upstream behaviour on every platform, and Claude teammates do not depend on it.
+  // These ride in the command text Claude writes and must survive the re-spelling.
   expect(teammate.env.CLAUDECODE, teammateContext).toBe('1')
   expect(teammate.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS, teammateContext).toBe('1')
+  expect(teammate.env.TMUX_PANE, teammateContext).toBe(leaderLog.pane)
+  expect(teammate.env.ORCA_AGENT_TEAMS_TEAM_ID, teammateContext).toBe(
+    leaderLog.env?.ORCA_AGENT_TEAMS_TEAM_ID
+  )
 
   // 3. The teammate is a real second pane of the leader's tab, in the runtime and on screen.
   if (leader.tabId) {

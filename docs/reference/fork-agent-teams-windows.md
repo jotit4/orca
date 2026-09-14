@@ -1,10 +1,16 @@
 # Claude Agent Teams con paneles nativos en Windows (fork)
 
-**Estado (2026-09-13):** implementado y **validado end-to-end en Windows real** (runner
-`windows-2022` de GitHub Actions, run 25 del workflow: los tres tests E2E en verde — camino RPC
-con pwsh 7, camino RPC con PowerShell 5.1 y camino del menú "Claude Agent Teams"). Rama
-`feat/agent-teams-windows` del fork `jotit4/orca`. Instalador validado: artefacto
-`orca-windows-setup-unsigned-25` de https://github.com/jotit4/orca/actions/runs/34734403880. Upstream (`stablyai/orca`) NO lo tiene: al 12/09 sigue forzando
+**Estado del candidato actual (2026-09-14):** estabilización implementada localmente y
+verificada con typecheck, lint focal y regresiones unitarias. **Todavía no es una versión
+laboral certificada:** el nuevo gate del Electron/CLI empaquetados debe pasar en
+`windows-2022`, y después falta una aceptación manual en Windows 10/11 con una sesión de
+Claude autenticada. El run 25 sólo valida la revisión anterior del fork; no constituye
+evidencia de estos cambios nuevos. Rama `feat/agent-teams-windows` del fork `jotit4/orca`.
+
+El artefacto histórico `orca-windows-setup-unsigned-25` del run
+https://github.com/jotit4/orca/actions/runs/34734403880 demostró la integración base, pero
+la auditoría posterior encontró fallos de ciclo de vida, fallback y cobertura del artefacto
+que este candidato corrige. Upstream (`stablyai/orca`) NO lo tiene: al 12/09 sigue forzando
 `--teammate-mode in-process` en `win32` (issues #15503 y #15751; PRs #15753 y #16116
 abiertos sin merge desde el 23/08).
 
@@ -22,7 +28,8 @@ Tres cosas lo impedían y las tres están resueltas (base: PR upstream #15753):
    launcher, al verse llamado `tmux`, antepone `agent-teams-tmux` y reenvía a la CLI.
 2. **El comando del pane venía escrito para `/bin/sh`.** Claude Code emite
    `cd 'E:\repo' && env CLAUDECODE=1 'C:\...\claude.exe' --agent-name X ...`. Orca lo
-   re-escribe para PowerShell: `Set-Location 'E:\repo'; $env:CLAUDECODE = '1'; & 'C:\...\claude.exe' --% --agent-name X ...`.
+   re-escribe para PowerShell con `Set-Location -LiteralPath ... -ErrorAction Stop` dentro
+   de un bloque; si el cwd no existe, el hijo no se ejecuta.
    Los argumentos se pasan según la generación de PowerShell que ejecuta el comando (ver
    "Validado en Windows real"): en 7.3+ con `$PSNativeCommandArgumentPassing = 'Standard'` y
    valores reales; en 5.1 pre-escapados (`legacyPowerShellNativeArg`), porque 5.1 sólo envuelve
@@ -45,7 +52,8 @@ POSIX propio en `src/shared/claude-agent-teams-pane-command.ts`
   quoting, y Git Bash/WSL no pueden ejecutar el shim `tmux.exe` ni el path Windows del
   launcher. En Windows el modo nativo es PowerShell-only por diseño.
 - Claude Code instalado nativo en Windows (`claude.exe` en `%USERPROFILE%\.local\bin` o
-  el `claude.cmd` de npm; ambos se invocan con `& '<path>'`).
+  el `claude.cmd` de npm. El smoke cubre el wrapper controlado del fixture; la distribución
+  npm real queda dentro de la aceptación manual.
 - El build del fork. **Los builds de upstream no sirven** (traen el gate).
 
 ## Instalación
@@ -63,19 +71,27 @@ POSIX propio en `src/shared/claude-agent-teams-pane-command.ts`
 Dos caminos, cualquiera sirve:
 
 - **Tab "Claude Agent Teams"** del catálogo de agentes (ahora aparece en Windows). En
-  Windows local lanza directamente `claude --teammate-mode auto` (NO `orca claude-teams`:
-  esa vía hospeda la TUI bajo Electron-como-node y el autor del PR la vio en blanco).
+  Windows local lanza directamente `claude --teammate-mode auto`.
 - **Tab Claude normal con `--teammate-mode auto`** en los argumentos del agente
   (Settings → Agents → Claude → args). Es exactamente lo mismo que hace la entrada del
   catálogo: `inferCapturedClaudeAgentTeamsMode` lo toma como `native-panes-shim` y el
   runtime inyecta el entorno del team (TMUX, TMUX_PANE, ORCA_AGENT_TEAMS_*) y el PATH con
   el shim. Este es el camino que el PR validó a mano.
 
-Cuando el plan degrada a in-process, el main process de Orca loguea
+Menú, runtime y `orca claude-teams` consumen el mismo plan efectivo. Cuando degrada a
+in-process, reemplaza cualquier `--teammate-mode auto|tmux`, retira sólo las variables
+gestionadas por Orca y el main process loguea
 `[claude-agent-teams] native panes unavailable (<motivo>)` con uno de estos motivos:
 `pane-shell-unsupported` (el shell de terminal no es PowerShell), `shim-bin-unresolved`
-(no se encontró `resources\bin\orca.exe`), `windows-shim-executable-missing` (no se pudo
-instalar `tmux.exe` en `~\.orca\claude-agent-teams-bin`).
+(no se encontró `resources\bin\orca.exe`), `shim-install-failed` (no se pudo escribir o
+actualizar el directorio privado) o `windows-shim-executable-missing` (no quedó un
+`tmux.exe` válido en `~\.orca\claude-agent-teams-bin`).
+
+La CLI nueva anuncia la versión del contrato dentro del env del request. Si una CLI vieja
+se conecta a un runtime nuevo y éste necesita fallback, el runtime falla con
+`claude_agent_teams_cli_upgrade_required_for_fallback` en vez de dejar que la CLI vieja
+ignore `mode/envToDelete` y cree una sesión híbrida. El camino nativo conserva
+compatibilidad con la CLI anterior.
 
 En cualquier caso hace falta `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` (Orca lo pone solo
 en el plan de lanzamiento).
@@ -96,6 +112,19 @@ en el plan de lanzamiento).
    PowerShell. Revisar Settings → Terminal → Windows shell.
 5. Si Claude cae a in-process (teammates dentro de la TUI del líder), revisar 1 y que el
    shell no sea cmd.exe.
+
+### Criterio de promoción y rollback
+
+Un build sólo puede marcarse apto para uso laboral cuando: el job E2E no empaquetado está
+verde; el gate empaquetado está verde para PowerShell 5.1 y 7; se instaló el mismo
+artefacto en Windows 10 u 11; y una sesión Claude real creó al menos dos teammates,
+intercambió mensajes, cerró/recreó uno y dejó líder y pane restante operables. Registrar
+SHA, run, nombre del artefacto, Windows y versión de Claude.
+
+Si falla cualquiera de esos puntos, no reemplazar el instalador laboral. Reinstalar el
+último artefacto aceptado (el updater del fork permanece desactivado), conservar el perfil
+y adjuntar la evidencia del gate. El fallback automático `in-process` es una degradación
+segura para esa sesión, no una certificación de panes nativos.
 
 ## Qué NO cubre
 
@@ -147,9 +176,10 @@ Dos hallazgos más:
   texto posterior se parte por espacios y se vuelve a citar (se vio en la línea de comandos
   cruda del hijo). La versión final emite el comando dos veces y el shell elige:
   `if ([version](...) -ge [version]'7.3.0') { $PSNativeCommandArgumentPassing = 'Standard'; & exe 'a' … } else { & exe 'a-preescapado' … }`.
-- **El pane del teammate no hereda el env del team** (`TMUX_PANE`, `ORCA_AGENT_TEAMS_*`): el
-  split que pasa por el renderer reenvía `command` pero no `env`. Es comportamiento
-  preexistente de upstream en todas las plataformas; Claude teammate no lo necesita.
+- **El pane del teammate ahora hereda su identidad de team** (`TMUX_PANE`,
+  `ORCA_AGENT_TEAMS_*`): el split correlacionado transporta `command`, `env` y
+  `envToDelete`. Los mensajes tardíos llevan un `leafId` explícito y no pueden apropiarse
+  del pane de otra creación concurrente.
 
 ## Gotcha: "Claude Agent Teams" oculto en perfiles viejos
 
@@ -167,7 +197,11 @@ Orca real (build e2e), un `claude` falso en el PATH que replica los comandos tmu
 de Claude Code 2.1.270, y un teammate falso que deja por escrito el argv, cwd y env que
 recibió. Verifica la cadena completa: plan de lanzamiento → `tmux.exe` → CLI → runtime →
 dispatcher → re-escritura PowerShell → segundo pane con el comando corriendo. No necesita
-cuenta de Claude. Lo único que no cubre es el propio binario de Claude Code.
+cuenta de Claude. Después, `build-windows` empaqueta el candidato y ejecuta
+`tests/tools/win-agent-teams-packaged/run.mjs` contra `dist/win-unpacked/Orca.exe`: exige
+dos panes visibles, controla el pane tras `respawn` con `list/send/capture/kill`, verifica
+cwd/argv/env, y recién entonces permite subir el instalador. Lo único que no cubre es el
+propio binario de Claude Code ni una interacción humana prolongada.
 
 ## Regresión heredada que dejaba Orca sin ventana en Windows (resuelta)
 
@@ -187,8 +221,6 @@ el job E2E del workflow.
 
 ## Deuda
 
-- `claude-agent-teams-tmux-dispatcher.ts` supera el `max-lines` (300) del pre-commit desde
-  antes de este cambio (374 líneas en HEAD); los commits van con `--no-verify`.
 - Rebase sobre upstream: el fork está ~2300 commits detrás de `main`. Cuando upstream
   mergee #15753 o #16116, comparar antes de rebasear: #16116 (draft del mantenedor)
   rehace el protocolo del daemon (v37) y es incompatible con este parche.
