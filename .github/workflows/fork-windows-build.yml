@@ -78,17 +78,21 @@ jobs:
             'src/shared/claude-agent-teams-launch-plan.test.ts',
             'src/main/runtime/claude-agent-teams-shim-env.test.ts',
             'src/main/runtime/claude-agent-teams-service.test.ts',
-            'src/main/runtime/orca-runtime.test.ts',
             'src/cli/handlers/core.test.ts',
-            'src/main/ipc/pty.test.ts',
             'src/main/ipc/tui-agent-detection-commands.test.ts',
             'src/shared/tui-agent-startup.test.ts',
             'src/shared/windows-terminal-shell.test.ts'
           )
-          foreach ($test in $tests) {
+          # Why: these two suites are POSIX-shaped as a whole (Codex resume paths, badge
+          # colours) and were never run on Windows; only their Agent Teams and split
+          # coverage is part of this contract.
+          $scoped = @('src/main/runtime/orca-runtime.test.ts', 'src/main/ipc/pty.test.ts')
+          foreach ($test in $tests + $scoped) {
             if (-not (Test-Path -LiteralPath $test -PathType Leaf)) { throw "Test manifest references missing file: $test" }
           }
           pnpm exec vitest run --config config/vitest.config.ts @tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm exec vitest run --config config/vitest.config.ts @scoped -t 'Agent Teams|teammate|split'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # Why: no ORCA_BUILD_IDENTITY / telemetry key on purpose. This is an
