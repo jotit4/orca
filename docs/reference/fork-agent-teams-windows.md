@@ -1,11 +1,15 @@
 # Claude Agent Teams con paneles nativos en Windows (fork)
 
-**Estado del candidato actual (2026-09-14):** estabilización implementada localmente y
-verificada con typecheck, lint focal y regresiones unitarias. **Todavía no es una versión
-laboral certificada:** el nuevo gate del Electron/CLI empaquetados debe pasar en
-`windows-2022`, y después falta una aceptación manual en Windows 10/11 con una sesión de
-Claude autenticada. El run 25 sólo valida la revisión anterior del fork; no constituye
-evidencia de estos cambios nuevos. Rama `feat/agent-teams-windows` del fork `jotit4/orca`.
+**Estado del candidato actual (2026-09-14):** estabilización implementada y **el workflow
+fail-closed completo en verde en `windows-2022`** (run 27,
+https://github.com/jotit4/orca/actions/runs/34859228096): E2E de tres caminos, tests
+unitarios en Windows, build, y **gate sobre el `Orca.exe` empaquetado real con PowerShell
+5.1 y 7** (dos panes visibles, `list/send/capture/kill` sobre el pane tras el respawn, cwd
+literal con corchetes y apóstrofe, argv con argumento vacío, `orca.exe` empaquetado como
+shim). **Candidato para la notebook: artefacto `orca-windows-setup-unsigned-27` de ese run.**
+Lo que falta para llamarlo versión laboral certificada es la aceptación manual en Windows
+10/11 con una sesión de Claude autenticada (ver "Criterio de promoción y rollback"). Rama
+`feat/agent-teams-windows` del fork `jotit4/orca`.
 
 El artefacto histórico `orca-windows-setup-unsigned-25` del run
 https://github.com/jotit4/orca/actions/runs/34734403880 demostró la integración base, pero
