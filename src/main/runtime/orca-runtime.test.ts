@@ -13315,11 +13315,11 @@ describe('OrcaRuntimeService', () => {
     expect(spawnCall?.command).toBe('cursor-agent "--force"')
   })
 
-  // Why: claude-agent-teams is the only agent whose launcher name varies by
-  // platform (launchCmdByPlatform), so it is what proves resolution is
-  // platform-aware rather than a fixed string.
+  // Why: native Windows requires an absolute executable shim. This synthetic
+  // platform test has none, so it must fail closed to Claude in-process; Unix
+  // still proves the catalog launchCmdByPlatform selection.
   it.each([
-    { platform: 'win32' as const, expected: 'orca.cmd claude-teams' },
+    { platform: 'win32' as const, expected: 'claude --teammate-mode in-process' },
     { platform: 'linux' as const, expected: 'orca-ide claude-teams' },
     { platform: 'darwin' as const, expected: 'orca claude-teams' }
   ])(
@@ -14722,7 +14722,8 @@ describe('OrcaRuntimeService', () => {
         command?: string
         telemetrySource?: string
       }
-    ) => void
+    ) => void,
+    closeTerminal = vi.fn()
   ): void {
     runtime.setNotifier({
       worktreesChanged: vi.fn(),
@@ -14733,7 +14734,7 @@ describe('OrcaRuntimeService', () => {
       splitTerminal,
       renameTerminal: vi.fn(),
       focusTerminal: vi.fn(),
-      closeTerminal: vi.fn(),
+      closeTerminal,
       sleepWorktree: vi.fn(),
       terminalFitOverrideChanged: vi.fn(),
       terminalDriverChanged: vi.fn()
@@ -14814,6 +14815,101 @@ describe('OrcaRuntimeService', () => {
     expect(splitB.handle).toBe(runtime.getTerminalHandleForPaneKey(`${tabId}:${thirdLeafId}`))
   })
 
+  it('correlates Agent Teams splits to the requested leaf rather than an unrelated new pane', async () => {
+    const runtime = new OrcaRuntimeService(store)
+    const split = vi.fn()
+    setSplitTerminalGraphNotifier(runtime, split)
+    const tabId = 'tab-correlated-split'
+    const tab = {
+      tabId,
+      worktreeId: TEST_WORKTREE_ID,
+      title: null,
+      activeLeafId: HEADLESS_LEAF_ID,
+      layout: null
+    }
+    const source = {
+      tabId,
+      worktreeId: TEST_WORKTREE_ID,
+      leafId: HEADLESS_LEAF_ID,
+      paneRuntimeId: 1,
+      ptyId: 'pty-source'
+    }
+    runtime.attachWindow(1)
+    runtime.syncWindowGraph(1, { tabs: [tab], leaves: [source] })
+    const handle = runtime.getTerminalHandleForPaneKey(`${tabId}:${HEADLESS_LEAF_ID}`)!
+    let settled = false
+    const pending = runtime
+      .splitTerminal(handle, {
+        command: 'Wait-Event',
+        env: { ORCA_AGENT_TEAMS_TEAM_ID: 'team-a', TMUX_PANE: '%2' },
+        envToDelete: ['TERM_PROGRAM']
+      })
+      .then((result) => {
+        settled = true
+        return result
+      })
+    await vi.waitFor(() => expect(split).toHaveBeenCalledTimes(1))
+    const opts = split.mock.calls[0]![2]
+    expect(opts).toMatchObject({
+      env: { TMUX_PANE: '%2' },
+      envToDelete: ['TERM_PROGRAM'],
+      newLeafId: expect.any(String),
+      expiresAt: expect.any(Number)
+    })
+    const unrelated = {
+      ...source,
+      leafId: '22222222-2222-4222-8222-222222222222',
+      paneRuntimeId: 2,
+      ptyId: 'pty-other'
+    }
+    runtime.syncWindowGraph(1, { tabs: [tab], leaves: [source, unrelated] })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    const expected = { ...source, leafId: opts.newLeafId, paneRuntimeId: 3, ptyId: 'pty-expected' }
+    runtime.syncWindowGraph(1, { tabs: [tab], leaves: [source, unrelated, expected] })
+    expect((await pending).handle).toBe(
+      runtime.getTerminalHandleForPaneKey(`${tabId}:${opts.newLeafId}`)
+    )
+  })
+
+  it('bounds the total Agent Teams split queue and creation wait', async () => {
+    vi.useFakeTimers()
+    try {
+      const runtime = new OrcaRuntimeService(store)
+      const split = vi.fn()
+      const close = vi.fn()
+      setSplitTerminalGraphNotifier(runtime, split, close)
+      const tabId = 'tab-expired-split'
+      const tab = {
+        tabId,
+        worktreeId: TEST_WORKTREE_ID,
+        title: null,
+        activeLeafId: HEADLESS_LEAF_ID,
+        layout: null
+      }
+      const source = {
+        tabId,
+        worktreeId: TEST_WORKTREE_ID,
+        leafId: HEADLESS_LEAF_ID,
+        paneRuntimeId: 1,
+        ptyId: 'pty-source'
+      }
+      runtime.attachWindow(1)
+      runtime.syncWindowGraph(1, { tabs: [tab], leaves: [source] })
+      const handle = runtime.getTerminalHandleForPaneKey(`${tabId}:${HEADLESS_LEAF_ID}`)!
+      const options = { env: { ORCA_AGENT_TEAMS_TEAM_ID: 'team-a' }, command: 'cat' }
+      const first = runtime.splitTerminal(handle, options).catch((error: Error) => error)
+      const second = runtime.splitTerminal(handle, options).catch((error: Error) => error)
+      await vi.advanceTimersByTimeAsync(45_001)
+      expect(await first).toBeInstanceOf(Error)
+      expect(await second).toBeInstanceOf(Error)
+      expect(split).toHaveBeenCalledTimes(1)
+      expect(close).toHaveBeenCalledWith(tabId, -1, split.mock.calls[0]![2].newLeafId)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('does not let a first split that times out block a second split on the same tab', async () => {
     vi.useFakeTimers()
     try {
@@ -14859,8 +14955,8 @@ describe('OrcaRuntimeService', () => {
       splitAPromise.catch(() => {})
 
       // Why: the renderer never answers split A's request -- advance past its
-      // internal 10s timeout so it rejects instead of wedging the queue.
-      await vi.advanceTimersByTimeAsync(10_000)
+      // internal 45s timeout so it rejects instead of wedging the queue.
+      await vi.advanceTimersByTimeAsync(45_000)
       await expect(splitAPromise).rejects.toThrow('Timed out waiting for split pane handle')
 
       // Split B must already be running its own snapshot+wait, unblocked by
@@ -23671,12 +23767,10 @@ describe('OrcaRuntimeService', () => {
       try {
         const runtime = createRuntime()
         let calls = 0
-        const check = vi
-          .spyOn(runtime, 'isTerminalRunningAgent')
-          .mockImplementation(async () => {
-            calls += 1
-            return calls >= 3
-          })
+        const check = vi.spyOn(runtime, 'isTerminalRunningAgent').mockImplementation(async () => {
+          calls += 1
+          return calls >= 3
+        })
 
         const resultPromise = runtime.waitForTerminalAgent('term-1', {
           timeoutMs: 5_000,

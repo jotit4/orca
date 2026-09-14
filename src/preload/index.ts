@@ -3912,6 +3912,10 @@ const api = {
         paneRuntimeId: number
         direction: 'horizontal' | 'vertical'
         command?: string
+        env?: Record<string, string>
+        envToDelete?: string[]
+        newLeafId?: string
+        expiresAt?: number
         telemetrySource?: TerminalPaneSplitSource
       }) => void
     ): (() => void) => {
@@ -3922,6 +3926,10 @@ const api = {
           paneRuntimeId: number
           direction: 'horizontal' | 'vertical'
           command?: string
+          env?: Record<string, string>
+          envToDelete?: string[]
+          newLeafId?: string
+          expiresAt?: number
           telemetrySource?: TerminalPaneSplitSource
         }
       ) => callback(data)
@@ -4046,11 +4054,11 @@ const api = {
       ipcRenderer.send('ui:mobileMarkdownResponse', response)
     },
     onCloseTerminal: (
-      callback: (data: { tabId: string; paneRuntimeId?: number }) => void
+      callback: (data: { tabId: string; paneRuntimeId?: number; leafId?: string }) => void
     ): (() => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
-        data: { tabId: string; paneRuntimeId?: number }
+        data: { tabId: string; paneRuntimeId?: number; leafId?: string }
       ) => callback(data)
       ipcRenderer.on('ui:closeTerminal', listener)
       return () => ipcRenderer.removeListener('ui:closeTerminal', listener)

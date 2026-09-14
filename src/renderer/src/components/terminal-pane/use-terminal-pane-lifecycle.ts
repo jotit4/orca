@@ -444,7 +444,7 @@ export function resolvePaneSeedCwd(splitPaneCwd: string | undefined, fallbackCwd
   return splitPaneCwd ?? fallbackCwd
 }
 
-type SplitStartupPayload = { command: string; env?: Record<string, string> }
+type SplitStartupPayload = { command: string; env?: Record<string, string>; envToDelete?: string[] }
 
 type SplitWithStartupDeps = {
   startup?: SplitStartupPayload | null
@@ -1678,6 +1678,9 @@ export function useTerminalPaneLifecycle({
     // Why: deliver the startup command via the PTY connection path (waits for shell readiness), not terminal.paste() which can lose input before the shell reads stdin.
     function onCliSplitPane(event: Event): void {
       const detail = (event as CustomEvent<SplitTerminalPaneDetail>).detail
+      if (detail?.expiresAt !== undefined && Date.now() >= detail.expiresAt) {
+        return
+      }
       if (!detail?.tabId || detail.tabId !== tabId) {
         return
       }
@@ -1699,8 +1702,14 @@ export function useTerminalPaneLifecycle({
         ...(detail.ptyId ? { ptyId: detail.ptyId } : {})
       }
       if (detail.command) {
-        const createdPane = splitPaneWithOneShotStartup(ptyDeps, { command: detail.command }, () =>
-          mgr.splitPane(sourcePaneId, detail.direction, splitOptions)
+        const createdPane = splitPaneWithOneShotStartup(
+          ptyDeps,
+          {
+            command: detail.command,
+            ...(detail.env ? { env: detail.env } : {}),
+            ...(detail.envToDelete ? { envToDelete: detail.envToDelete } : {})
+          },
+          () => mgr.splitPane(sourcePaneId, detail.direction, splitOptions)
         )
         recordRuntimeCreatedTerminalPaneSplit(createdPane, {
           source: detail.telemetrySource ?? 'command',

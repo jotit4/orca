@@ -1,7 +1,8 @@
 import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
-import { accessSync, constants, existsSync } from 'node:fs'
+import { accessSync, constants, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { delimiter, dirname, join } from 'node:path'
+import { delimiter, dirname, isAbsolute, join } from 'node:path'
+import { claudeTeamsFallbackEnvironment } from '../../shared/claude-agent-teams-launch-plan'
 import {
   addClaudeTeammateModeAuto,
   addClaudeTeammateModeInProcess,
@@ -10,12 +11,10 @@ import {
 } from '../../shared/claude-agent-teams-tmux-compat'
 import { supportsClaudeAgentTeamsPaneCommand } from '../../shared/claude-agent-teams-pane-command'
 import { getOrcaCliCommandNameForPlatform } from '../../shared/orca-cli-command-name'
-import {
-  resolveStartupShell,
-  type AgentStartupShell
-} from '../../shared/tui-agent-startup-shell'
+import { resolveStartupShell, type AgentStartupShell } from '../../shared/tui-agent-startup-shell'
 
 export type ClaudeAgentTeamsLaunchPlan = {
+  mode: 'in-process' | 'native-panes-shim'
   command: string
   env: Record<string, string>
   envToDelete?: string[]
@@ -26,6 +25,7 @@ export type ClaudeAgentTeamsLaunchPlan = {
 export type ClaudeAgentTeamsFallbackReason =
   | 'pane-shell-unsupported'
   | 'shim-bin-unresolved'
+  | 'shim-install-failed'
   | 'windows-shim-executable-missing'
 
 export async function ensureClaudeAgentTeamsShimDir(
@@ -60,22 +60,23 @@ export function windowsClaudeAgentTeamsShimExecutablePath(root = defaultShimRoot
  * Orca CLI, and it switches to tmux-shim mode when its own file name is `tmux`,
  * so a copy of it under that name is the shim.
  */
-async function installWindowsShimExecutable(
-  root: string,
-  launcher: string | null
-): Promise<void> {
+async function installWindowsShimExecutable(root: string, launcher: string | null): Promise<void> {
   // Why: only a real launcher binary can be the shim; a `.cmd` (the dev CLI wrapper) is exactly what Claude Code cannot spawn.
   if (!launcher || !/\.exe$/i.test(launcher) || !isExecutableFile(launcher)) {
     return
   }
   const target = windowsClaudeAgentTeamsShimExecutablePath(root)
+  const launcherBytes = await readFile(launcher)
   try {
-    await writeIfChanged(target, await readFile(launcher))
+    await writeIfChanged(target, launcherBytes)
   } catch (error) {
     // Why: Windows refuses to replace an executable while a copy of it is still
     // running (a teammate's tmux call in flight). An older shim that already
     // exists keeps working, so keep the launch alive instead of failing it.
-    if (!isExecutableFile(target)) {
+    const targetMatches = await readFile(target)
+      .then((content) => content.equals(launcherBytes))
+      .catch(() => false)
+    if (!targetMatches) {
       throw error
     }
   }
@@ -100,11 +101,14 @@ export async function buildClaudeAgentTeamsLaunchPlan(args: {
     if (fallbackReason) {
       // Why: a silent degrade is the failure mode that cost days on Windows —
       // the team "works" with every teammate hidden inside the leader's TUI.
-      console.warn(`[claude-agent-teams] native panes unavailable (${fallbackReason}); launching in-process`)
+      console.warn(
+        `[claude-agent-teams] native panes unavailable (${fallbackReason}); launching in-process`
+      )
     }
     return {
+      mode: 'in-process',
       command: addClaudeTeammateModeInProcess(args.command!),
-      env: { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' },
+      ...claudeTeamsFallbackEnvironment(args.baseEnv, process.platform),
       ...(fallbackReason ? { fallbackReason } : {})
     }
   }
@@ -121,15 +125,23 @@ export async function buildClaudeAgentTeamsLaunchPlan(args: {
     return inProcess('pane-shell-unsupported')
   }
   const shimBin = resolveClaudeAgentTeamsShimBin(args.baseEnv)
-  if (!shimBin) {
+  if (!shimBin || !isAbsolute(shimBin) || !isExecutableFile(shimBin)) {
     // Why: without an absolute CLI path the shim would resolve a bare `orca` against the pane cwd, so degrade instead.
     return inProcess('shim-bin-unresolved')
   }
+  if (process.platform === 'win32' && !/\.exe$/i.test(shimBin)) {
+    return inProcess('windows-shim-executable-missing')
+  }
   // Why: the shim is a copy of the launcher the team publishes as ORCA_AGENT_TEAMS_SHIM_BIN, so the
   // same binary serves packaged installs and an unpackaged build pointed at a built launcher.
-  const shimDir = await ensureClaudeAgentTeamsShimDir(args.shimRoot ?? defaultShimRoot(), {
-    windowsLauncher: shimBin
-  })
+  let shimDir: string
+  try {
+    shimDir = await ensureClaudeAgentTeamsShimDir(args.shimRoot ?? defaultShimRoot(), {
+      windowsLauncher: shimBin
+    })
+  } catch {
+    return inProcess('shim-install-failed')
+  }
   // Why: the .cmd shim is unspawnable from Claude Code, so without the executable the team would launch paneless.
   if (
     process.platform === 'win32' &&
@@ -139,6 +151,7 @@ export async function buildClaudeAgentTeamsLaunchPlan(args: {
   }
   const env = args.createTeamEnv(shimDir, shimBin)
   return {
+    mode: 'native-panes-shim',
     command: addClaudeTeammateModeAuto(args.command),
     env,
     envToDelete: ['TERM_PROGRAM', 'ORCA_ATTRIBUTION_SHIM_DIR']
@@ -155,9 +168,18 @@ export function resolveClaudeAgentTeamsShimBin(
   if (bundled && isExecutableFile(bundled)) {
     return bundled
   }
+  const pathKey =
+    Object.keys(env).find((key) =>
+      process.platform === 'win32' ? key.toLowerCase() === 'path' : key === 'PATH'
+    ) ?? 'PATH'
   return (
-    findExecutableOnPath(process.platform === 'win32' ? 'orca-dev.cmd' : 'orca-dev', env.PATH) ??
-    findExecutableOnPath(getOrcaCliCommandNameForPlatform(process.platform), env.PATH) ??
+    findExecutableOnPath(process.platform === 'win32' ? 'orca.exe' : 'orca-dev', env[pathKey]) ??
+    findExecutableOnPath(
+      process.platform === 'win32'
+        ? 'orca-dev.cmd'
+        : getOrcaCliCommandNameForPlatform(process.platform),
+      env[pathKey]
+    ) ??
     getOrcaCliCommandNameForPlatform(process.platform)
   )
 }
@@ -197,7 +219,7 @@ function findExecutableOnPath(command: string, pathValue: string | undefined): s
 
 function isExecutableFile(candidate: string): boolean {
   try {
-    if (!existsSync(candidate)) {
+    if (!statSync(candidate).isFile()) {
       return false
     }
     accessSync(candidate, process.platform === 'win32' ? constants.F_OK : constants.X_OK)

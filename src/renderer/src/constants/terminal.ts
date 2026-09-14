@@ -51,6 +51,9 @@ export type SplitTerminalPaneDetail = {
   paneRuntimeId: number
   direction: 'horizontal' | 'vertical'
   command?: string
+  env?: Record<string, string>
+  envToDelete?: string[]
+  expiresAt?: number
   sourceLeafId?: string
   sourcePtyId?: string
   telemetrySource?: TerminalPaneSplitSource

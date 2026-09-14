@@ -28,7 +28,7 @@ describe('claude agent teams shim env', () => {
   it('builds native shim env only for direct Claude commands', async () => {
     const root = await mkdtemp(join(tmpdir(), 'orca-agent-teams-cli-'))
     roots.push(root)
-    const cliName = process.platform === 'win32' ? 'orca-dev.cmd' : 'orca-dev'
+    const cliName = process.platform === 'win32' ? 'orca.exe' : 'orca-dev'
     const cliPath = join(root, cliName)
     await writeFile(cliPath, '#!/usr/bin/env sh\n', 'utf8')
     if (process.platform !== 'win32') {
@@ -92,10 +92,36 @@ describe('claude agent teams shim env', () => {
           throw new Error('cmd panes cannot run the sh command Claude Code writes')
         }
       })
-    ).resolves.toEqual({
+    ).resolves.toMatchObject({
+      mode: 'in-process',
       command: 'claude --teammate-mode in-process',
       env: { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' },
       fallbackReason: 'pane-shell-unsupported'
+    })
+  })
+
+  it('falls back instead of aborting when the private shim cannot be installed', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'orca-agent-teams-install-'))
+    roots.push(root)
+    const cliPath = join(root, process.platform === 'win32' ? 'orca.exe' : 'orca-dev')
+    const blockedRoot = join(root, 'not-a-directory')
+    await writeFile(cliPath, 'MZ launcher', 'utf8')
+    await writeFile(blockedRoot, 'blocked', 'utf8')
+    if (process.platform !== 'win32') {
+      await chmod(cliPath, 0o755)
+    }
+
+    await expect(
+      buildClaudeAgentTeamsLaunchPlan({
+        command: 'claude',
+        mode: 'native-panes-shim',
+        baseEnv: { PATH: root },
+        shimRoot: blockedRoot,
+        createTeamEnv: () => ({})
+      })
+    ).resolves.toMatchObject({
+      mode: 'in-process',
+      fallbackReason: 'shim-install-failed'
     })
   })
 
@@ -117,7 +143,8 @@ describe('claude agent teams shim env', () => {
             throw new Error('Claude Code cannot spawn tmux.cmd, so panes are unreachable')
           }
         })
-      ).resolves.toEqual({
+      ).resolves.toMatchObject({
+        mode: 'in-process',
         command: 'claude --teammate-mode in-process',
         env: { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' },
         fallbackReason: 'windows-shim-executable-missing'

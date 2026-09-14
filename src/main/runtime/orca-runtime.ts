@@ -437,6 +437,8 @@ import {
 } from '../../shared/tui-agent-launch-defaults'
 import { resolveLocalWindowsAgentStartupShell } from '../../shared/windows-terminal-shell'
 import type { AgentStartupShell } from '../../shared/tui-agent-startup-shell'
+import { applyClaudeTeamsPlanToConfig } from '../../shared/claude-agent-teams-launch-plan'
+import { claudeTeammateMode } from '../../shared/claude-agent-teams-launch-command'
 import {
   getTuiAgentLaunchCommand,
   isTuiAgent,
@@ -575,14 +577,9 @@ import type {
 } from './claude-agent-teams-service'
 import {
   buildClaudeAgentTeamsLaunchPlan,
-  ensureClaudeAgentTeamsShimDir,
-  resolveClaudeAgentTeamsShimBin
+  type ClaudeAgentTeamsLaunchPlan
 } from './claude-agent-teams-shim-env'
-import {
-  addClaudeTeammateModeAuto,
-  addClaudeTeammateModeInProcess,
-  type ClaudeAgentTeamsMode
-} from '../../shared/claude-agent-teams-tmux-compat'
+import type { ClaudeAgentTeamsMode } from '../../shared/claude-agent-teams-tmux-compat'
 import { joinWorktreeRelativePath } from './runtime-relative-paths'
 import { collectMemorySnapshot } from '../memory/collector'
 import { app, BrowserWindow, ipcMain, Notification } from 'electron'
@@ -1502,10 +1499,10 @@ function inferCapturedClaudeAgentTeamsMode(
   const capturedCommand = launchConfig?.agentCommand?.trim() || command?.trim() || ''
   const capturedArgs = launchConfig?.agentArgs?.trim() ?? ''
   const capturedLaunch = `${capturedCommand} ${capturedArgs}`.trim()
-  if (/(^|\s)--teammate-mode(?:=|\s+)auto(?:\s|$)/.test(capturedLaunch)) {
+  if (['auto', 'tmux'].includes(claudeTeammateMode(capturedLaunch) ?? '')) {
     return 'native-panes-shim'
   }
-  if (/(^|\s)--teammate-mode(?:=|\s+)in-process(?:\s|$)/.test(capturedLaunch)) {
+  if (claudeTeammateMode(capturedLaunch) === 'in-process') {
     return 'in-process'
   }
   if (launchConfig && /(^|\s)--resume(?:\s|=|$)/.test(command?.trim() ?? '')) {
@@ -1907,6 +1904,10 @@ type RuntimeNotifier = {
     opts: {
       direction: 'horizontal' | 'vertical'
       command?: string
+      env?: Record<string, string>
+      envToDelete?: string[]
+      newLeafId?: string
+      expiresAt?: number
       telemetrySource?: TerminalPaneSplitSource
     }
   ): void
@@ -1935,7 +1936,7 @@ type RuntimeNotifier = {
     baseVersion: string,
     content: string
   ): Promise<RuntimeMarkdownSaveTabResult>
-  closeTerminal(tabId: string, paneRuntimeId?: number): void
+  closeTerminal(tabId: string, paneRuntimeId?: number, leafId?: string): void
   closeTerminalTab?(tabId: string): Promise<void>
   sleepWorktree(worktreeId: string): void
   // Why: a phone opening a worktree wakes its slept agents by asking the host
@@ -25518,32 +25519,33 @@ export class OrcaRuntimeService {
         let agentTeamsPlan: Awaited<ReturnType<typeof buildClaudeAgentTeamsLaunchPlan>> | undefined
         const agentTeamsPaneShell = this.resolveClaudeAgentTeamsPaneShell()
         try {
-          agentTeamsPlan = adoptedBeforeLaunch
-            ? undefined
-            : await buildClaudeAgentTeamsLaunchPlan({
-                command: claudeAgentTeamsSourceCommand,
-                mode: effectiveClaudeAgentTeamsMode,
-                baseEnv: {
-                  ...process.env,
-                  ...baseEnv
-                },
-                paneShell: agentTeamsPaneShell,
-                createTeamEnv: (shimDir, shimBin) =>
-                  this.claudeAgentTeams.createLaunchEnv({
-                    leaderHandle: preAllocatedHandle,
-                    // Why (#11739): paneKey is already minted above for the hook
-                    // path; reuse it so the leader pane can recover from a stale
-                    // handle instead of failing every tmux call for the session.
-                    leaderPaneKey: paneKey,
-                    baseEnv: {
-                      ...process.env,
-                      ...baseEnv
-                    },
-                    shimDir,
-                    shimBin,
-                    paneShell: agentTeamsPaneShell
-                  }).env
-              })
+          agentTeamsPlan =
+            adoptedBeforeLaunch || workspace.connectionId
+              ? undefined
+              : await buildClaudeAgentTeamsLaunchPlan({
+                  command: claudeAgentTeamsSourceCommand,
+                  mode: effectiveClaudeAgentTeamsMode,
+                  baseEnv: {
+                    ...process.env,
+                    ...baseEnv
+                  },
+                  paneShell: agentTeamsPaneShell,
+                  createTeamEnv: (shimDir, shimBin) =>
+                    this.claudeAgentTeams.createLaunchEnv({
+                      leaderHandle: preAllocatedHandle,
+                      // Why (#11739): paneKey is already minted above for the hook
+                      // path; reuse it so the leader pane can recover from a stale
+                      // handle instead of failing every tmux call for the session.
+                      leaderPaneKey: paneKey,
+                      baseEnv: {
+                        ...process.env,
+                        ...baseEnv
+                      },
+                      shimDir,
+                      shimBin,
+                      paneShell: agentTeamsPaneShell
+                    }).env
+                })
         } catch (error) {
           releaseStablePaneCreate?.()
           throw error
@@ -25557,18 +25559,7 @@ export class OrcaRuntimeService {
             : undefined
         const effectiveLaunchConfig =
           launchOpts.launchConfig && agentTeamsPlan
-            ? {
-                ...launchOpts.launchConfig,
-                agentCommand: launchOpts.launchConfig.agentCommand
-                  ? effectiveClaudeAgentTeamsMode === 'in-process' || process.platform === 'win32'
-                    ? addClaudeTeammateModeInProcess(launchOpts.launchConfig.agentCommand)
-                    : addClaudeTeammateModeAuto(launchOpts.launchConfig.agentCommand)
-                  : agentTeamsPlan.command,
-                agentEnv: {
-                  ...launchOpts.launchConfig.agentEnv,
-                  ...agentTeamsPlan.env
-                }
-              }
+            ? applyClaudeTeamsPlanToConfig(launchOpts.launchConfig, agentTeamsPlan)
             : launchOpts.launchConfig
         // Why: setup/agent sequencing wraps the PTY launch in a wait shell before
         // Claude Agent Teams runs. Preserve the direct Claude command separately
@@ -27233,8 +27224,13 @@ export class OrcaRuntimeService {
     // first one's respawn-pane then closes that shared handle out from under
     // the second. Serialize by tabId so a queued split only takes its
     // leafKeysBefore photo once the previous split for that tab has settled.
-    const releaseSplitSlot = await this.acquireSplitTerminalSlot(leaf.tabId)
+    const newLeafId = opts.env?.ORCA_AGENT_TEAMS_TEAM_ID ? randomUUID() : undefined
+    const deadline = newLeafId ? Date.now() + RENDERER_SPLIT_LEAF_TIMEOUT_MS : undefined
+    const releaseSplitSlot = await this.acquireSplitTerminalSlot(leaf.tabId, deadline)
     try {
+      if (deadline !== undefined && Date.now() >= deadline) {
+        throw new Error('Timed out waiting for split queue')
+      }
       // Snapshot current leaf keys so the post-split graph-sync delta reveals the new pane.
       const leafKeysBefore = new Set<string>()
       for (const [key, l] of this.leaves) {
@@ -27246,6 +27242,9 @@ export class OrcaRuntimeService {
       this.notifier?.splitTerminal(leaf.tabId, leaf.paneRuntimeId, {
         direction,
         command: opts.command,
+        ...(opts.env ? { env: opts.env } : {}),
+        ...(opts.envToDelete ? { envToDelete: opts.envToDelete } : {}),
+        ...(newLeafId ? { newLeafId, expiresAt: deadline } : {}),
         telemetrySource: opts.telemetrySource
       })
 
@@ -27256,9 +27255,16 @@ export class OrcaRuntimeService {
       const newHandle = await this.waitForNewLeafInTab(
         leaf.tabId,
         leafKeysBefore,
-        RENDERER_SPLIT_LEAF_TIMEOUT_MS
+        deadline ? Math.max(1, deadline - Date.now()) : RENDERER_SPLIT_LEAF_TIMEOUT_MS,
+        newLeafId
       )
       return { handle: newHandle, tabId: leaf.tabId, paneRuntimeId: leaf.paneRuntimeId }
+    } catch (error) {
+      // The notifier transports the leaf id without exposing this sentinel to the renderer.
+      if (newLeafId) {
+        this.notifier?.closeTerminal(leaf.tabId, -1, newLeafId)
+      }
+      throw error
     } finally {
       releaseSplitSlot()
     }
@@ -27270,7 +27276,7 @@ export class OrcaRuntimeService {
   // failed/timed-out split still releases its slot (callers always run in a
   // try/finally), so the queue never wedges, and the map entry is dropped once no
   // other split is queued behind it so it doesn't leak per tab.
-  private async acquireSplitTerminalSlot(tabId: string): Promise<() => void> {
+  private async acquireSplitTerminalSlot(tabId: string, deadline?: number): Promise<() => void> {
     const previous = this.splitTerminalQueueByTabId.get(tabId) ?? Promise.resolve()
     let releaseCurrent = (): void => {}
     const current = new Promise<void>((resolve) => {
@@ -27278,7 +27284,32 @@ export class OrcaRuntimeService {
     })
     const tail = previous.catch(() => {}).then(() => current)
     this.splitTerminalQueueByTabId.set(tabId, tail)
-    await previous.catch(() => {})
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        previous.catch(() => {}),
+        ...(deadline === undefined
+          ? []
+          : [
+              new Promise<never>((_, reject) => {
+                timer = setTimeout(
+                  () => reject(new Error('Timed out waiting for split queue')),
+                  Math.max(1, deadline - Date.now())
+                )
+              })
+            ])
+      ])
+    } catch (error) {
+      releaseCurrent()
+      void tail.finally(() => {
+        if (this.splitTerminalQueueByTabId.get(tabId) === tail) {
+          this.splitTerminalQueueByTabId.delete(tabId)
+        }
+      })
+      throw error
+    } finally {
+      clearTimeout(timer)
+    }
     let released = false
     return () => {
       if (released) {
@@ -27425,42 +27456,54 @@ export class OrcaRuntimeService {
   async prepareClaudeAgentTeamsLeader(args: {
     paneKey: string
     baseEnv?: Record<string, string>
-  }): Promise<{ env: Record<string, string> }> {
+  }): Promise<ClaudeAgentTeamsLaunchPlan> {
     const handle = this.getTerminalHandleForPaneKey(args.paneKey)
     if (!handle) {
       throw new Error('claude_agent_teams_requires_orca_terminal')
     }
-    return await this.prepareClaudeAgentTeamsLeaderForHandle({
+    const plan = await this.prepareClaudeAgentTeamsLeaderForHandle({
       handle,
       baseEnv: args.baseEnv
     })
+    if (
+      plan.mode === 'in-process' &&
+      args.baseEnv?.ORCA_AGENT_TEAMS_LAUNCH_PLAN_VERSION !== '1'
+    ) {
+      throw new Error('claude_agent_teams_cli_upgrade_required_for_fallback')
+    }
+    return plan
   }
 
   async prepareClaudeAgentTeamsLeaderForHandle(args: {
     handle: string
     baseEnv?: Record<string, string>
-  }): Promise<{ env: Record<string, string> }> {
+    command?: string
+    paneShell?: AgentStartupShell
+  }): Promise<ClaudeAgentTeamsLaunchPlan> {
     const baseEnv = {
       ...process.env,
       ...args.baseEnv
     }
-    const shimBin = resolveClaudeAgentTeamsShimBin(baseEnv)
-    // Why: same contract as buildClaudeAgentTeamsLaunchPlan — on Windows the spawnable
-    // tmux.exe shim is a copy of the launcher this team publishes, so a renderer-launched
-    // leader gets it too (the packaged launcher is the default; unpackaged builds point
-    // ORCA_AGENT_TEAMS_SHIM_BIN at a built one).
-    const shimDir = await ensureClaudeAgentTeamsShimDir(undefined, { windowsLauncher: shimBin })
-    return this.claudeAgentTeams.createLaunchEnv({
-      leaderHandle: args.handle,
-      // Why (#11739): best-effort — a freshly pre-allocated handle may not have
-      // a resolvable pane yet, in which case the leader just can't self-heal a
-      // future stale handle (no regression versus before this fix).
-      leaderPaneKey: this.getPaneKeyForTerminalHandle(args.handle) ?? undefined,
+    const paneShell = args.paneShell ?? this.resolveClaudeAgentTeamsPaneShell()
+    const plan = await buildClaudeAgentTeamsLaunchPlan({
+      command: args.command ?? 'claude',
+      mode: 'native-panes-shim',
       baseEnv,
-      shimDir,
-      shimBin,
-      paneShell: this.resolveClaudeAgentTeamsPaneShell()
+      paneShell,
+      createTeamEnv: (shimDir, shimBin) =>
+        this.claudeAgentTeams.createLaunchEnv({
+          leaderHandle: args.handle,
+          leaderPaneKey: this.getPaneKeyForTerminalHandle(args.handle) ?? undefined,
+          baseEnv,
+          shimDir,
+          shimBin,
+          paneShell
+        }).env
     })
+    if (!plan) {
+      throw new Error('unsupported Claude Agent Teams launch command')
+    }
+    return plan
   }
 
   /** Teammate panes launch on the local host, so the local Windows shell preference decides their grammar. */
@@ -27475,11 +27518,17 @@ export class OrcaRuntimeService {
   private waitForNewLeafInTab(
     tabId: string,
     existingLeafKeys: Set<string>,
-    timeoutMs = 10_000
+    timeoutMs = 10_000,
+    expectedLeafId?: string
   ): Promise<string> {
     const tryResolve = (): string | null => {
       for (const [key, leaf] of this.leaves) {
-        if (leaf.tabId === tabId && !existingLeafKeys.has(key) && leaf.ptyId !== null) {
+        if (
+          leaf.tabId === tabId &&
+          !existingLeafKeys.has(key) &&
+          leaf.ptyId !== null &&
+          (expectedLeafId === undefined || leaf.leafId === expectedLeafId)
+        ) {
           return this.issueHandle(leaf)
         }
       }

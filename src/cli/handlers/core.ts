@@ -15,9 +15,30 @@ function envRecord(): Record<string, string> {
   )
 }
 
-function withTeammateModeAuto(args: string[]): string[] {
+function withTeammateMode(args: string[], mode?: 'in-process' | 'native-panes-shim'): string[] {
+  if (mode === 'in-process') {
+    const remaining: string[] = []
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index]!
+      if (arg === '--') {
+        remaining.push(...args.slice(index))
+        break
+      }
+      if (arg === '--teammate-mode') {
+        if (args[index + 1] && !args[index + 1]!.startsWith('--')) {
+          index += 1
+        }
+      } else if (!arg.startsWith('--teammate-mode=')) {
+        remaining.push(arg)
+      }
+    }
+    return ['--teammate-mode', 'in-process', ...remaining]
+  }
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]
+    if (arg === '--') {
+      break
+    }
     if (arg === '--teammate-mode' || arg.startsWith('--teammate-mode=')) {
       return args
     }
@@ -25,9 +46,13 @@ function withTeammateModeAuto(args: string[]): string[] {
   return ['--teammate-mode', 'auto', ...args]
 }
 
-async function runClaudeAgentTeams(env: Record<string, string>, args: string[]): Promise<number> {
+async function runClaudeAgentTeams(
+  env: Record<string, string>,
+  args: string[],
+  mode?: 'in-process' | 'native-panes-shim'
+): Promise<number> {
   return await new Promise((resolve, reject) => {
-    const child = spawn('claude', withTeammateModeAuto(args), {
+    const child = spawn('claude', withTeammateMode(args, mode), {
       stdio: 'inherit',
       env
     })
@@ -66,20 +91,22 @@ export const CORE_HANDLERS: Record<string, CommandHandler> = {
         'orca claude-teams must be run inside an Orca terminal.'
       )
     }
-    const response = await client.call<{ launch: { env: Record<string, string> } }>(
-      'agentTeams.prepareLaunch',
-      {
-        paneKey,
-        env: envRecord()
+    const response = await client.call<{
+      launch: {
+        env: Record<string, string>
+        envToDelete?: string[]
+        mode?: 'in-process' | 'native-panes-shim'
       }
-    )
-    process.exitCode = await runClaudeAgentTeams(
-      {
-        ...envRecord(),
-        ...response.result.launch.env
-      },
-      rawArgs ?? []
-    )
+    }>('agentTeams.prepareLaunch', {
+      paneKey,
+      env: { ...envRecord(), ORCA_AGENT_TEAMS_LAUNCH_PLAN_VERSION: '1' }
+    })
+    const { launch } = response.result
+    const env = { ...envRecord(), ...launch.env }
+    for (const key of launch.envToDelete ?? []) {
+      delete env[key]
+    }
+    process.exitCode = await runClaudeAgentTeams(env, rawArgs ?? [], launch.mode)
   },
   open: async ({ client, json }) => {
     const result = await client.openOrca()

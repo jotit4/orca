@@ -1,3 +1,9 @@
+import {
+  claudeTeammateMode,
+  isDirectClaudeLaunch,
+  setClaudeTeammateMode
+} from './claude-agent-teams-launch-command'
+
 export type ClaudeAgentTeamsMode = 'off' | 'in-process' | 'native-panes-shim'
 
 export type ParsedTmuxCommand = {
@@ -167,27 +173,16 @@ function tmuxSpecialKeyText(token: string): string | null {
 }
 
 export function isDirectClaudeCommand(command: string | undefined): boolean {
-  const trimmed = command?.trim() ?? ''
-  if (!trimmed) {
-    return false
-  }
-  if (/[;&|<>`]/.test(trimmed)) {
-    return false
-  }
-  const first = trimmed.match(/^\S+/)?.[0] ?? ''
-  return first === 'claude' || first.endsWith('/claude')
+  return isDirectClaudeLaunch(command)
 }
 
 export function addClaudeTeammateModeAuto(command: string): string {
-  if (/(^|\s)--teammate-mode(?:\s|=|$)/.test(command)) {
+  if (claudeTeammateMode(command)) {
     return command
   }
-  return command.replace(/^(\S+)/, '$1 --teammate-mode auto')
+  return setClaudeTeammateMode(command, 'auto')
 }
 
 export function addClaudeTeammateModeInProcess(command: string): string {
-  if (/(^|\s)--teammate-mode(?:\s|=|$)/.test(command)) {
-    return command
-  }
-  return command.replace(/^(\S+)/, '$1 --teammate-mode in-process')
+  return setClaudeTeammateMode(command, 'in-process')
 }

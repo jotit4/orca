@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   MODERN_ARGUMENT_PASSING_TEST,
+  claudeAgentTeamsPaneCommand,
   legacyPowerShellNativeArg,
   retargetClaudeAgentTeamsPaneCommand,
   supportsClaudeAgentTeamsPaneCommand,
@@ -23,6 +24,18 @@ const TEAMMATE_COMMAND =
   "'C:\\Users\\dev\\.local\\bin\\claude.exe' --agent-name Nova --agent-color blue --model opus"
 
 describe('retargetClaudeAgentTeamsPaneCommand', () => {
+  it('rejects unsupported syntax at the dispatch boundary', () => {
+    expect(() => claudeAgentTeamsPaneCommand('claude $(whoami)', 'powershell')).toThrow()
+  })
+  it('joins continued words without inserting whitespace', () => {
+    expect(tokenizePosixPaneCommand('claude ab\\\ncd')).toEqual({
+      ok: true,
+      tokens: [
+        { value: 'claude', diverges: false },
+        { value: 'abcd', diverges: false }
+      ]
+    })
+  })
   it('re-spells the teammate launch for PowerShell', () => {
     const call = nativeCall('C:\\Users\\dev\\.local\\bin\\claude.exe', [
       '--agent-name',
@@ -33,7 +46,7 @@ describe('retargetClaudeAgentTeamsPaneCommand', () => {
       'opus'
     ])
     expect(retargetClaudeAgentTeamsPaneCommand(TEAMMATE_COMMAND, 'powershell')).toBe(
-      `Set-Location 'E:\\Repos\\demo'; $env:CLAUDECODE = '1'; $env:CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1'; ${call}`
+      `& { Set-Location -LiteralPath 'E:\\Repos\\demo' -ErrorAction Stop; $env:CLAUDECODE = '1'; $env:CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1'; ${call} }`
     )
   })
 
@@ -60,7 +73,9 @@ describe('retargetClaudeAgentTeamsPaneCommand', () => {
   })
 
   it('handles a bare command with neither prefix', () => {
-    expect(retargetClaudeAgentTeamsPaneCommand('sleep 1', 'powershell')).toBe(nativeCall('sleep', ['1']))
+    expect(retargetClaudeAgentTeamsPaneCommand('sleep 1', 'powershell')).toBe(
+      nativeCall('sleep', ['1'])
+    )
   })
 
   it('keeps the cd prefix optional', () => {
@@ -72,7 +87,7 @@ describe('retargetClaudeAgentTeamsPaneCommand', () => {
   it('doubles apostrophes in values it interpolates', () => {
     expect(
       retargetClaudeAgentTeamsPaneCommand("cd '/it'\"'\"'s here' && claude", 'powershell')
-    ).toBe("Set-Location '/it''s here'; & 'claude'")
+    ).toBe("& { Set-Location -LiteralPath '/it''s here' -ErrorAction Stop; & 'claude' }")
   })
 
   it('keeps operator characters that sh only ever saw inside quotes', () => {
@@ -82,7 +97,7 @@ describe('retargetClaudeAgentTeamsPaneCommand', () => {
         'powershell'
       )
     ).toBe(
-      `Set-Location '/repo'; $env:A = 'x|y'; ${nativeCall('claude', ['--prompt', 'a|b', '--filter', 'c;d', '--to', '>e'])}`
+      `& { Set-Location -LiteralPath '/repo' -ErrorAction Stop; $env:A = 'x|y'; ${nativeCall('claude', ['--prompt', 'a|b', '--filter', 'c;d', '--to', '>e'])} }`
     )
   })
 
@@ -109,7 +124,7 @@ describe('retargetClaudeAgentTeamsPaneCommand', () => {
         'powershell'
       )
     ).toBe(
-      `Set-Location '/repo'; ${nativeCall('claude', ['--agent-name', 'say "hi"', '--dir', 'C:\\a b\\'])}`
+      `& { Set-Location -LiteralPath '/repo' -ErrorAction Stop; ${nativeCall('claude', ['--agent-name', 'say "hi"', '--dir', 'C:\\a b\\'])} }`
     )
   })
 })
@@ -117,7 +132,9 @@ describe('retargetClaudeAgentTeamsPaneCommand', () => {
 describe('legacyPowerShellNativeArg', () => {
   it('leaves plain arguments alone', () => {
     expect(legacyPowerShellNativeArg('--agent-name')).toBe('--agent-name')
-    expect(legacyPowerShellNativeArg('C:\\Users\\dev\\claude.exe')).toBe('C:\\Users\\dev\\claude.exe')
+    expect(legacyPowerShellNativeArg('C:\\Users\\dev\\claude.exe')).toBe(
+      'C:\\Users\\dev\\claude.exe'
+    )
   })
 
   it('escapes inner quotes whether or not the shell will wrap the argument', () => {
@@ -130,7 +147,7 @@ describe('legacyPowerShellNativeArg', () => {
   it('doubles a trailing backslash run only when the shell adds a closing quote', () => {
     expect(legacyPowerShellNativeArg('C:\\a b\\')).toBe('C:\\a b\\\\')
     expect(legacyPowerShellNativeArg('C:\\ab\\')).toBe('C:\\ab\\')
-    expect(legacyPowerShellNativeArg('')).toBe('')
+    expect(legacyPowerShellNativeArg('')).toBe('""')
   })
 })
 

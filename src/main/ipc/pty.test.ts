@@ -8151,6 +8151,8 @@ describe('registerPtyHandlers', () => {
     const spawnOptions = spawnMock.mock.calls.at(-1)?.[2] as { env: Record<string, string> }
     expect(runtime.prepareClaudeAgentTeamsLeaderForHandle).toHaveBeenCalledWith({
       handle: 'term_agent_teams',
+      command: 'claude --teammate-mode auto --resume claude-session',
+      paneShell: isWindowsHost ? 'powershell' : undefined,
       baseEnv: expect.objectContaining({
         CLAUDE_PROFILE: 'captured',
         ORCA_AGENT_TEAMS_TEAM_ID: 'team-stale'
@@ -8178,6 +8180,60 @@ describe('registerPtyHandlers', () => {
     expect(runtime.registerPreAllocatedHandleForPty).toHaveBeenCalledWith(
       expect.any(String),
       'term_agent_teams'
+    )
+  })
+
+  it('applies the Agent Teams fallback plan to the renderer command and saved environment', async () => {
+    classifyErrorMock.mockReturnValue({ error_class: 'unknown' })
+    const runtime = {
+      setPtyController: vi.fn(),
+      createPreAllocatedTerminalHandle: vi.fn(() => 'term_fallback'),
+      preAllocateHandleForPty: vi.fn(() => 'term_fallback'),
+      prepareClaudeAgentTeamsLeaderForHandle: vi.fn(async () => ({
+        mode: 'in-process',
+        command: 'claude --teammate-mode in-process --model opus',
+        env: { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' },
+        envToDelete: ['TMUX', 'TMUX_PANE', 'ORCA_AGENT_TEAMS_TOKEN', 'ORCA_AGENT_TEAMS_TEAM_ID']
+      })),
+      noteTerminalSpawnCommand: vi.fn(),
+      registerPreAllocatedHandleForPty: vi.fn(),
+      registerPty: vi.fn(),
+      getDriver: vi.fn(() => ({ kind: 'host' })),
+      onPtySpawned: vi.fn(),
+      onPtyExit: vi.fn(),
+      onPtyData: vi.fn()
+    }
+    registerPtyHandlers(mainWindow as never, runtime as never)
+    await handlers.get('pty:spawn')!(mainWindowIpcEvent, {
+      cols: 80,
+      rows: 24,
+      cwd: '/repo',
+      command: 'claude --teammate-mode auto --model opus',
+      tabId: 'tab-1',
+      leafId: '11111111-1111-4111-8111-111111111111',
+      worktreeId: 'wt-1',
+      env: {
+        ORCA_PANE_KEY: 'tab-1:11111111-1111-4111-8111-111111111111',
+        ORCA_TAB_ID: 'tab-1',
+        ORCA_WORKTREE_ID: 'wt-1',
+        TMUX: 'old',
+        TMUX_PANE: '%1',
+        ORCA_AGENT_TEAMS_TEAM_ID: 'old',
+        ORCA_AGENT_TEAMS_TOKEN: 'old'
+      },
+      launchConfig: {
+        agentCommand: 'claude --teammate-mode auto',
+        agentArgs: '--model opus',
+        agentEnv: { ORCA_AGENT_TEAMS_TOKEN: 'old', CLAUDE_PROFILE: 'keep' }
+      },
+      launchAgent: 'claude'
+    })
+    const env = spawnMock.mock.calls.at(-1)?.[2].env
+    expect(env).not.toHaveProperty('ORCA_AGENT_TEAMS_TOKEN')
+    expect(env).not.toHaveProperty('TMUX')
+    expect(runtime.noteTerminalSpawnCommand).toHaveBeenCalledWith(
+      expect.any(String),
+      'claude --teammate-mode in-process --model opus'
     )
   })
 
@@ -8400,6 +8456,8 @@ describe('registerPtyHandlers', () => {
 
     expect(runtime.prepareClaudeAgentTeamsLeaderForHandle).toHaveBeenCalledWith({
       handle: 'term_agent_teams',
+      command: 'claude --resume claude-session',
+      paneShell: isWindowsHost ? 'powershell' : undefined,
       baseEnv: expect.any(Object)
     })
   })

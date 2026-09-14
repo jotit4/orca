@@ -3,6 +3,13 @@ import { join, delimiter } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { statSync } from 'node:fs'
 import {
+  claudeTeammateMode,
+  isDirectClaudeLaunch
+} from '../../shared/claude-agent-teams-launch-command'
+import { applyClaudeTeamsPlanToConfig } from '../../shared/claude-agent-teams-launch-plan'
+import { resolveLocalWindowsAgentStartupShell } from '../../shared/windows-terminal-shell'
+import type { ClaudeAgentTeamsLaunchPlan } from '../runtime/claude-agent-teams-shim-env'
+import {
   type BrowserWindow,
   type IpcMainEvent,
   type IpcMainInvokeEvent,
@@ -495,7 +502,7 @@ function shouldRefreshNativeClaudeAgentTeamsEnv(args: {
   const capturedCommand = args.launchConfig?.agentCommand?.trim() || args.command?.trim() || ''
   const capturedArgs = args.launchConfig?.agentArgs?.trim() ?? ''
   const capturedLaunch = `${capturedCommand} ${capturedArgs}`.trim()
-  return /(^|\s)--teammate-mode(?:=|\s+)auto(?:\s|$)/.test(capturedLaunch)
+  return ['auto', 'tmux'].includes(claudeTeammateMode(capturedLaunch) ?? '')
 }
 
 function rememberPaneKeyForPty(ptyId: string, paneKey: unknown): string | null {
@@ -6119,6 +6126,7 @@ export function registerPtyHandlers(
             launchConfig: args.launchConfig
           })
         let effectiveLaunchConfig = args.launchConfig
+        let agentTeamsPlan: ClaudeAgentTeamsLaunchPlan | undefined
         const shouldPreAllocateTerminalHandle =
           runtime !== undefined &&
           ((!(provider instanceof LocalPtyProvider) &&
@@ -6131,27 +6139,34 @@ export function registerPtyHandlers(
           // Why: Agent Teams ids/tokens are process-local, so the team env must be regenerated for the new leader PTY.
           const prepared = await runtime.prepareClaudeAgentTeamsLeaderForHandle({
             handle: preAllocatedHandle,
-            baseEnv: baseEnv ?? {}
+            baseEnv: baseEnv ?? {},
+            command: isDirectClaudeLaunch(args.command)
+              ? args.command
+              : `${args.launchConfig?.agentCommand ?? 'claude'} ${args.launchConfig?.agentArgs ?? ''}`.trim(),
+            paneShell: resolveLocalWindowsAgentStartupShell({
+              platform: process.platform,
+              isRemote: false,
+              terminalWindowsShell: initialShellOverride ?? getSettings?.()?.terminalWindowsShell
+            })
           })
+          agentTeamsPlan = prepared
           baseEnv = {
             ...baseEnv,
             ...prepared.env
           }
+          deleteRequestedEnvKeys(baseEnv, prepared.envToDelete ?? [])
+          if (baseEnv[SETUP_AGENT_SEQUENCE_STARTUP_COMMAND_ENV] && prepared.command) {
+            baseEnv[SETUP_AGENT_SEQUENCE_STARTUP_COMMAND_ENV] = prepared.command
+          }
           if (args.launchConfig) {
-            effectiveLaunchConfig = {
-              ...args.launchConfig,
-              agentEnv: {
-                ...args.launchConfig.agentEnv,
-                ...prepared.env
-              }
-            }
+            effectiveLaunchConfig = applyClaudeTeamsPlanToConfig(args.launchConfig, prepared)
           }
         }
         const requestedAgentTeamsPath = baseEnv?.ORCA_AGENT_TEAMS_TEAM_ID
           ? baseEnv[resolvePathEnvKey(baseEnv, process.platform)]
           : undefined
         const agentTeamsEnvToDelete = shouldRefreshAgentTeamsEnv
-          ? ['TERM_PROGRAM', 'ORCA_ATTRIBUTION_SHIM_DIR']
+          ? (agentTeamsPlan?.envToDelete ?? ['TERM_PROGRAM', 'ORCA_ATTRIBUTION_SHIM_DIR'])
           : undefined
         if (baseEnv && stablePaneKey) {
           baseEnv.ORCA_PANE_KEY = stablePaneKey
@@ -6201,7 +6216,10 @@ export function registerPtyHandlers(
           ? await resolveCodexResumeLaunch(args.command, codexResumePreparation)
           : noCodexResumeLaunch(preAdoptedStablePane ? undefined : args.command)
         const codexResumeHome = codexResumeLaunch.codexResumeHome
-        const launchCommand = codexResumeLaunch.command
+        const launchCommand =
+          agentTeamsPlan?.command && isDirectClaudeLaunch(codexResumeLaunch.command)
+            ? agentTeamsPlan.command
+            : codexResumeLaunch.command
         baseEnv = stripSequencedStartupResumeArgv(baseEnv, codexResumeLaunch)
         // Why: declared after the strip so a local-provider spawn cannot capture the
         // pre-strip env — only the daemon branch below re-derives this from baseEnv.

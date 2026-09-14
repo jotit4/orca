@@ -1812,12 +1812,25 @@ export function useIpcEvents(): void {
 
     unsubs.push(
       window.api.ui.onSplitTerminal(
-        ({ tabId, paneRuntimeId, direction, command, telemetrySource }) => {
+        ({
+          tabId,
+          paneRuntimeId,
+          direction,
+          command,
+          telemetrySource,
+          env,
+          envToDelete,
+          newLeafId,
+          expiresAt
+        }) => {
           const detail: SplitTerminalPaneDetail = {
             tabId,
             paneRuntimeId,
             direction,
             command,
+            ...(env ? { env } : {}),
+            ...(envToDelete ? { envToDelete } : {}),
+            ...(newLeafId ? { newLeafId, expiresAt } : {}),
             telemetrySource
           }
           window.dispatchEvent(new CustomEvent(SPLIT_TERMINAL_PANE_EVENT, { detail }))
@@ -1977,10 +1990,14 @@ export function useIpcEvents(): void {
     )
 
     unsubs.push(
-      window.api.ui.onCloseTerminal(({ tabId, paneRuntimeId }) => {
-        if (paneRuntimeId != null) {
+      window.api.ui.onCloseTerminal(({ tabId, paneRuntimeId, leafId }) => {
+        if (paneRuntimeId != null || leafId) {
           // Why: route pane closes via the lifecycle hook for sibling promotion (falls through to closeTab on the last pane).
-          const detail: CloseTerminalPaneDetail = { tabId, paneRuntimeId }
+          const detail: CloseTerminalPaneDetail = {
+            tabId,
+            paneRuntimeId,
+            ...(leafId ? { leafId } : {})
+          }
           window.dispatchEvent(new CustomEvent(CLOSE_TERMINAL_PANE_EVENT, { detail }))
         } else {
           // Why: the CLI/RPC caller is answered immediately, so it cannot wait on a modal.

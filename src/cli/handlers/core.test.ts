@@ -47,13 +47,13 @@ describe('orca claude-teams CLI handler', () => {
   const callMock = vi.fn()
   const client = { call: callMock } as unknown as RuntimeClient
 
-  function runClaudeTeams(): Promise<void> {
+  function runClaudeTeams(rawArgs: string[] = []): Promise<void> {
     const ctx: HandlerContext = {
       flags: new Map(),
       client,
       cwd: '/tmp/repo',
       json: false,
-      rawArgs: []
+      rawArgs
     }
     return CORE_HANDLERS['claude-teams'](ctx)
   }
@@ -90,41 +90,69 @@ describe('orca claude-teams CLI handler', () => {
     process.exitCode = previousExitCode
   })
 
-  it(
-    'does not leak ELECTRON_RUN_AS_NODE into the spawned claude child',
-    async () => {
-      await runClaudeTeams()
-
-      expect(spawnMock).toHaveBeenCalledWith('claude', expect.any(Array), expect.any(Object))
-      const spawnEnv = spawnMock.mock.calls.at(-1)?.[2].env as SpawnEnv
-      expect(spawnEnv.ELECTRON_RUN_AS_NODE).toBeUndefined()
-
-      // The prepareLaunch request env is built from the same helper, so it must
-      // be sanitized too.
-      const prepareLaunchEnv = (callMock.mock.calls[0][1] as { env: SpawnEnv }).env
-      expect(prepareLaunchEnv.ELECTRON_RUN_AS_NODE).toBeUndefined()
-    }
-  )
-
-  it(
-    'still forwards non-Electron parent env and prepareLaunch env to claude',
-    async () => {
-      const previousMarker = process.env.ORCA_TEST_MARKER
-      process.env.ORCA_TEST_MARKER = 'keep-me'
-      try {
-        await runClaudeTeams()
-      } finally {
-        if (previousMarker === undefined) {
-          delete process.env.ORCA_TEST_MARKER
-        } else {
-          process.env.ORCA_TEST_MARKER = previousMarker
+  it('honors fallback mode and environment deletions while preserving positional arguments', async () => {
+    callMock.mockResolvedValue({
+      result: {
+        launch: {
+          mode: 'in-process',
+          env: { ORCA_AGENT_TEAMS_TOKEN: 'stale', CLAUDE_PROFILE: 'keep' },
+          envToDelete: ['ORCA_AGENT_TEAMS_TOKEN']
         }
       }
+    })
+    await runClaudeTeams([
+      '--teammate-mode',
+      'auto',
+      '--model',
+      'opus',
+      '--teammate-mode=tmux',
+      '--',
+      '--teammate-mode',
+      'auto'
+    ])
+    expect(spawnMock.mock.calls[0][1]).toEqual([
+      '--teammate-mode',
+      'in-process',
+      '--model',
+      'opus',
+      '--',
+      '--teammate-mode',
+      'auto'
+    ])
+    expect(spawnMock.mock.calls[0][2].env).not.toHaveProperty('ORCA_AGENT_TEAMS_TOKEN')
+    expect(spawnMock.mock.calls[0][2].env.CLAUDE_PROFILE).toBe('keep')
+  })
 
-      const spawnEnv = spawnMock.mock.calls.at(-1)?.[2].env as SpawnEnv
-      expect(spawnEnv.ORCA_TEST_MARKER).toBe('keep-me')
-      expect(spawnEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS).toBe('1')
-      expect(spawnEnv.PATH).toBe('/shim:/usr/bin')
+  it('does not leak ELECTRON_RUN_AS_NODE into the spawned claude child', async () => {
+    await runClaudeTeams()
+
+    expect(spawnMock).toHaveBeenCalledWith('claude', expect.any(Array), expect.any(Object))
+    const spawnEnv = spawnMock.mock.calls.at(-1)?.[2].env as SpawnEnv
+    expect(spawnEnv.ELECTRON_RUN_AS_NODE).toBeUndefined()
+
+    // The prepareLaunch request env is built from the same helper, so it must
+    // be sanitized too.
+      const prepareLaunchEnv = (callMock.mock.calls[0][1] as { env: SpawnEnv }).env
+      expect(prepareLaunchEnv.ELECTRON_RUN_AS_NODE).toBeUndefined()
+      expect(prepareLaunchEnv.ORCA_AGENT_TEAMS_LAUNCH_PLAN_VERSION).toBe('1')
+  })
+
+  it('still forwards non-Electron parent env and prepareLaunch env to claude', async () => {
+    const previousMarker = process.env.ORCA_TEST_MARKER
+    process.env.ORCA_TEST_MARKER = 'keep-me'
+    try {
+      await runClaudeTeams()
+    } finally {
+      if (previousMarker === undefined) {
+        delete process.env.ORCA_TEST_MARKER
+      } else {
+        process.env.ORCA_TEST_MARKER = previousMarker
+      }
     }
-  )
+
+    const spawnEnv = spawnMock.mock.calls.at(-1)?.[2].env as SpawnEnv
+    expect(spawnEnv.ORCA_TEST_MARKER).toBe('keep-me')
+    expect(spawnEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS).toBe('1')
+    expect(spawnEnv.PATH).toBe('/shim:/usr/bin')
+  })
 })

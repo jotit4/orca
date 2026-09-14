@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   addClaudeTeammateModeAuto,
+  addClaudeTeammateModeInProcess,
   isDirectClaudeCommand,
   parseTmuxArgs,
   renderTmuxFormat,
@@ -10,6 +11,14 @@ import {
 } from './claude-agent-teams-tmux-compat'
 
 describe('claude agent teams tmux compat primitives', () => {
+  it('forces fallback while preserving quoted prompt text', () => {
+    expect(addClaudeTeammateModeInProcess('claude --teammate-mode=auto --model opus')).toBe(
+      'claude --teammate-mode in-process --model opus'
+    )
+    expect(
+      addClaudeTeammateModeInProcess("claude --teammate-mode tmux 'explain --teammate-mode auto'")
+    ).toBe("claude --teammate-mode in-process 'explain --teammate-mode auto'")
+  })
   it('parses clustered tmux flags and keeps split size out of positional command text', () => {
     const parsed = parseTmuxArgs(
       ['-t', '%1', '-hPl', '70%', '-F', '#{pane_id}', 'echo hi'],

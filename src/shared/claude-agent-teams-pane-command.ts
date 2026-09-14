@@ -1,4 +1,8 @@
-import { commandSeparator, quoteStartupArg, type AgentStartupShell } from './tui-agent-startup-shell'
+import {
+  commandSeparator,
+  quoteStartupArg,
+  type AgentStartupShell
+} from './tui-agent-startup-shell'
 
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
 
@@ -39,7 +43,11 @@ export function claudeAgentTeamsPaneCommand(
   if (!command) {
     return undefined
   }
-  return retargetClaudeAgentTeamsPaneCommand(command, shell) ?? command
+  const translated = retargetClaudeAgentTeamsPaneCommand(command, shell)
+  if (shell === 'powershell' && translated === null) {
+    throw new Error('unsupported POSIX teammate command for PowerShell')
+  }
+  return translated ?? command
 }
 
 /**
@@ -65,7 +73,14 @@ export function retargetClaudeAgentTeamsPaneCommand(
     return null
   }
   const tokens = parsed.tokens
-  const isCdChain = tokens.length > 3 && tokens[0]!.value === 'cd' && tokens[2]!.value === '&&'
+  const isCdChain =
+    tokens.length > 3 &&
+    tokens[0]!.value === 'cd' &&
+    tokens[2]!.value === '&&' &&
+    tokens[2]!.diverges
+  if (tokens[0]?.value === 'cd' && !isCdChain) {
+    return null
+  }
   // Why: `&&` after a `cd` is the one operator this rewrite models. Any other
   // diverging token — a bare operator, a substitution, a line continuation —
   // means sh would run something the rewrite does not express, and PowerShell
@@ -95,11 +110,14 @@ export function retargetClaudeAgentTeamsPaneCommand(
     argv.length === 1 && argv[0] === 'cat'
       ? POWERSHELL_HOLDING_COMMAND
       : powerShellNativeInvocation(argv)
-  return [
-    ...(directory === null ? [] : [`Set-Location ${quoteStartupArg(directory, shell)}`]),
+  const launch = [
+    ...(directory === null
+      ? []
+      : [`Set-Location -LiteralPath ${quoteStartupArg(directory, shell)} -ErrorAction Stop`]),
     ...assignments.map((each) => `$env:${each.name} = ${quoteStartupArg(each.value, shell)}`),
     body
   ].join(commandSeparator(shell))
+  return directory === null ? launch : `& { ${launch} }`
 }
 
 type PosixPaneToken = {
@@ -111,7 +129,26 @@ type PosixPaneToken = {
 type PosixPaneTokens = { ok: true; tokens: PosixPaneToken[] } | { ok: false }
 
 // Characters that make sh interpret an unquoted word instead of passing it through.
-const POSIX_SPECIAL = new Set(['|', '&', ';', '<', '>', '(', ')', '$', '`', '*', '?', '[', ']', '{', '}', '#', '~', '\n'])
+const POSIX_SPECIAL = new Set([
+  '|',
+  '&',
+  ';',
+  '<',
+  '>',
+  '(',
+  ')',
+  '$',
+  '`',
+  '*',
+  '?',
+  '[',
+  ']',
+  '{',
+  '}',
+  '#',
+  '~',
+  '\n'
+])
 
 /**
  * Splits a `/bin/sh` command into words the way sh would, remembering per word
@@ -150,7 +187,13 @@ export function tokenizePosixPaneCommand(command: string): PosixPaneTokens {
     if (quote === '"') {
       if (char === '"') {
         quote = null
-      } else if (char === '\\' && index + 1 < command.length && '\\"$`'.includes(command[index + 1]!)) {
+      } else if (char === '\\' && command[index + 1] === '\n') {
+        index += 1
+      } else if (
+        char === '\\' &&
+        index + 1 < command.length &&
+        '\\"$`'.includes(command[index + 1]!)
+      ) {
         value += command[index + 1]
         index += 1
       } else {
@@ -176,9 +219,8 @@ export function tokenizePosixPaneCommand(command: string): PosixPaneTokens {
       }
       const escaped = command[index + 1]!
       if (escaped === '\n') {
-        // Why: an escaped newline joins lines; treat it as whitespace.
+        // POSIX removes both bytes, even in the middle of a word.
         index += 1
-        flush()
         continue
       }
       value += escaped
@@ -253,6 +295,9 @@ export const MODERN_ARGUMENT_PASSING_TEST =
  * needs doubling only when the shell will add the closing quote after it.
  */
 export function legacyPowerShellNativeArg(value: string): string {
+  if (value === '') {
+    return '""'
+  }
   const shellWillQuote = value.length === 0 || /\s/.test(value)
   let escaped = ''
   let backslashes = 0
