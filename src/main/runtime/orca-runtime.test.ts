@@ -5,7 +5,7 @@ import { performance } from 'node:perf_hooks'
 import { EventEmitter } from 'node:events'
 import { createHash, randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { lstat, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { basename, join, win32 } from 'node:path'
@@ -14081,6 +14081,14 @@ describe('OrcaRuntimeService', () => {
 
   it('restores captured native Claude Agent Teams mode with fresh service env', async () => {
     setPlatform('linux')
+    // Why: the native plan now insists on an absolute, executable CLI launcher instead of a
+    // bare `orca` name; publish a stand-in so the test does not depend on the host PATH.
+    const shimRoot = mkdtempSync(join(tmpdir(), 'orca-agent-teams-shim-bin-'))
+    const shimBin = join(shimRoot, 'orca-dev')
+    writeFileSync(shimBin, '#!/bin/sh\n', { mode: 0o755 })
+    const previousShimBin = process.env.ORCA_AGENT_TEAMS_SHIM_BIN
+    process.env.ORCA_AGENT_TEAMS_SHIM_BIN = shimBin
+    try {
     const spawn = vi.fn().mockResolvedValue({ id: 'pty-bg' })
     const revealTerminalSession = vi.fn().mockResolvedValue({ tabId: 'tab-bg' })
     const runtimeStore = {
@@ -14165,6 +14173,14 @@ describe('OrcaRuntimeService', () => {
     const revealedLaunchConfig = revealTerminalSession.mock.calls[0]?.[1]?.launchConfig
     expect(revealedLaunchConfig?.agentEnv.ORCA_AGENT_TEAMS_TEAM_ID).not.toBe('stale-team')
     expect(revealedLaunchConfig?.agentEnv.ORCA_AGENT_TEAMS_TOKEN).not.toBe('stale-token')
+    } finally {
+      if (previousShimBin === undefined) {
+        delete process.env.ORCA_AGENT_TEAMS_SHIM_BIN
+      } else {
+        process.env.ORCA_AGENT_TEAMS_SHIM_BIN = previousShimBin
+      }
+      rmSync(shimRoot, { recursive: true, force: true })
+    }
   })
 
   it('does not apply current Agent Teams mode to captured plain Claude resumes', async () => {

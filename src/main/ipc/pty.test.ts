@@ -8152,7 +8152,8 @@ describe('registerPtyHandlers', () => {
     expect(runtime.prepareClaudeAgentTeamsLeaderForHandle).toHaveBeenCalledWith({
       handle: 'term_agent_teams',
       command: 'claude --teammate-mode auto --resume claude-session',
-      paneShell: isWindowsHost ? 'powershell' : undefined,
+      // Why: the suite forces process.platform to darwin above, so no Windows pane shell resolves here regardless of the host.
+      paneShell: undefined,
       baseEnv: expect.objectContaining({
         CLAUDE_PROFILE: 'captured',
         ORCA_AGENT_TEAMS_TEAM_ID: 'team-stale'
@@ -8457,7 +8458,8 @@ describe('registerPtyHandlers', () => {
     expect(runtime.prepareClaudeAgentTeamsLeaderForHandle).toHaveBeenCalledWith({
       handle: 'term_agent_teams',
       command: 'claude --resume claude-session',
-      paneShell: isWindowsHost ? 'powershell' : undefined,
+      // Why: the suite forces process.platform to darwin above, so no Windows pane shell resolves here regardless of the host.
+      paneShell: undefined,
       baseEnv: expect.any(Object)
     })
   })
