@@ -3,10 +3,7 @@ import { splitTmuxCommand } from '../../shared/claude-agent-teams-tmux-compat'
 import { forgetPane } from './claude-agent-teams-pane-layout'
 import { ClaudeAgentTeamsTmuxDispatcher } from './claude-agent-teams-tmux-dispatcher'
 import { resolvePathEnvKey } from '../pty/windows-environment-path'
-import {
-  resolveStartupShell,
-  type AgentStartupShell
-} from '../../shared/tui-agent-startup-shell'
+import { resolveStartupShell, type AgentStartupShell } from '../../shared/tui-agent-startup-shell'
 import type {
   AgentTeam,
   AgentTeamsLaunchEnv,
@@ -101,7 +98,9 @@ export class ClaudeAgentTeamsService {
   // closed (UI close, `closeTerminal`, or the teammate process exiting).
   forgetTerminalHandle(handle: string): void {
     for (const [teamId, team] of this.teams) {
-      if (team.leaderHandle === handle) {
+      if (team.panes.get(team.leaderPane)?.handle === handle) {
+        team.panes.clear()
+        team.paneOrder = []
         this.teams.delete(teamId)
         continue
       }
@@ -115,7 +114,13 @@ export class ClaudeAgentTeamsService {
   }
 
   removeTeamForLeaderHandle(handle: string): void {
-    this.forgetTerminalHandle(handle)
+    for (const [teamId, team] of this.teams) {
+      if (team.leaderHandle === handle || team.panes.get(team.leaderPane)?.handle === handle) {
+        team.panes.clear()
+        team.paneOrder = []
+        this.teams.delete(teamId)
+      }
+    }
   }
 
   getActiveTeamCount(): number {

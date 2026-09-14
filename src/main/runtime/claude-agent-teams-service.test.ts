@@ -76,6 +76,7 @@ function createServiceWithLeader(paneShell: AgentStartupShell = 'posix'): {
     }),
     closeTerminal: vi.fn(async (handle) => {
       throwIfStale(handle)
+      service.forgetTerminalHandle(handle)
       return { handle, tabId: 'tab-1', ptyKilled: true }
     }),
     showTerminal: vi.fn(async (handle) => ({
@@ -110,6 +111,73 @@ function createServiceWithLeader(paneShell: AgentStartupShell = 'posix'): {
 }
 
 describe('ClaudeAgentTeamsService', () => {
+  it('rejects overlapping respawns and cleans up when the placeholder exits during creation', async () => {
+    const { service, teamId, token, leaderPane, api } = createServiceWithLeader()
+    const request = (argv: string[]) =>
+      service.handleTmuxCompat({ teamId, token, envPane: leaderPane, argv }, api)
+    await request(['split-window', '-P', '--', 'cat'])
+    let finish!: (value: { handle: string; tabId: string; paneRuntimeId: number }) => void
+    vi.mocked(api.splitTerminal).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve
+        })
+    )
+    const first = request(['respawn-pane', '-t', '%2', '--', 'claude'])
+    await expect(request(['respawn-pane', '-t', '%2', '--', 'claude'])).resolves.toMatchObject({
+      exitCode: 1,
+      stderr: expect.stringContaining('already in progress')
+    })
+    service.forgetTerminalHandle('teammate-1')
+    finish({ handle: 'replacement', tabId: 'tab-1', paneRuntimeId: -1 })
+    await expect(first).resolves.toMatchObject({
+      exitCode: 1,
+      stderr: expect.stringContaining('exited during replacement')
+    })
+    expect(api.closeTerminal).toHaveBeenCalledWith('replacement')
+    await expect(request(['list-panes', '-F', '#{pane_id}'])).resolves.toMatchObject({
+      stdout: '%1\n'
+    })
+  })
+
+  it('keeps the placeholder controllable when replacement creation or cleanup fails', async () => {
+    const { service, teamId, token, leaderPane, api } = createServiceWithLeader()
+    const request = (argv: string[]) =>
+      service.handleTmuxCompat({ teamId, token, envPane: leaderPane, argv }, api)
+    await request(['split-window', '-P', '--', 'cat'])
+    vi.mocked(api.splitTerminal).mockRejectedValueOnce(new Error('split failed'))
+    await expect(request(['respawn-pane', '-t', '%2', '--', 'claude'])).resolves.toMatchObject({
+      exitCode: 1
+    })
+    await request(['send-keys', '-t', '%2', 'before'])
+    expect(api.sendTerminal).toHaveBeenLastCalledWith('teammate-1', { text: 'before' })
+    vi.mocked(api.closeTerminal).mockRejectedValueOnce(new Error('close failed'))
+    await expect(request(['respawn-pane', '-t', '%2', '--', 'claude'])).resolves.toMatchObject({
+      exitCode: 1
+    })
+    expect(api.closeTerminal).toHaveBeenLastCalledWith('teammate-2')
+    await request(['send-keys', '-t', '%2', 'after'])
+    expect(api.sendTerminal).toHaveBeenLastCalledWith('teammate-1', { text: 'after' })
+    await expect(request(['respawn-pane', '-t', '%2', '--', 'claude'])).resolves.toMatchObject({
+      exitCode: 0
+    })
+  })
+
+  it('reports a replacement that exits during old-process cleanup as failed', async () => {
+    const { service, teamId, token, leaderPane, api } = createServiceWithLeader()
+    const request = (argv: string[]) =>
+      service.handleTmuxCompat({ teamId, token, envPane: leaderPane, argv }, api)
+    await request(['split-window', '-P', '--', 'cat'])
+    vi.mocked(api.closeTerminal).mockImplementationOnce(async (handle) => {
+      service.forgetTerminalHandle('teammate-2')
+      return { handle, tabId: 'tab-1', ptyKilled: true }
+    })
+    await expect(request(['respawn-pane', '-t', '%2', '--', 'claude'])).resolves.toMatchObject({
+      exitCode: 1,
+      stderr: expect.stringContaining('replacement pane exited')
+    })
+  })
+
   it('supports Claude core tmux teammate sequence with native splits', async () => {
     const { service, teamId, token, leaderPane, api, splitCalls } = createServiceWithLeader()
     const request = (argv: string[]) =>
@@ -222,6 +290,15 @@ describe('ClaudeAgentTeamsService', () => {
       request(['list-panes', '-t', 'orca:0', '-F', '#{pane_id}'])
     ).resolves.toMatchObject({ stdout: '%1\n%2\n' })
 
+    service.forgetTerminalHandle('teammate-1')
+    await expect(request(['send-keys', '-t', '%2', 'hello'])).resolves.toMatchObject({
+      exitCode: 0
+    })
+    expect(api.sendTerminal).toHaveBeenLastCalledWith('teammate-2', { text: 'hello' })
+    await expect(request(['capture-pane', '-p', '-t', '%2'])).resolves.toMatchObject({
+      stdout: 'line one\nline two\n',
+      exitCode: 0
+    })
     await request(['kill-pane', '-t', '%2'])
     expect(api.closeTerminal).toHaveBeenLastCalledWith('teammate-2')
   })
@@ -232,7 +309,18 @@ describe('ClaudeAgentTeamsService', () => {
     const request = (argv: string[], envPane = leaderPane) =>
       service.handleTmuxCompat({ teamId, token, envPane, argv }, api)
 
-    await request(['split-window', '-d', '-t', leaderPane, '-h', '-P', '-F', '#{pane_id}', '--', 'cat'])
+    await request([
+      'split-window',
+      '-d',
+      '-t',
+      leaderPane,
+      '-h',
+      '-P',
+      '-F',
+      '#{pane_id}',
+      '--',
+      'cat'
+    ])
     await request(['set-option', '-p', '-t', '%2', 'remain-on-exit', 'failed'])
     await expect(
       request([
@@ -248,10 +336,10 @@ describe('ClaudeAgentTeamsService', () => {
     // Why: `cat` holds the placeholder pane open under sh; PowerShell's `cat` prompts for a path.
     expect(splitCalls[0]?.command).toBe('Wait-Event')
     expect(splitCalls.at(-1)?.command).toBe(
-      "Set-Location 'C:\\repo'; $env:CLAUDECODE = '1'; if (" +
+      "& { Set-Location -LiteralPath 'C:\\repo' -ErrorAction Stop; $env:CLAUDECODE = '1'; if (" +
         "[version]($PSVersionTable.PSVersion.ToString().Split('-')[0]) -ge [version]'7.3.0'" +
         ") { $PSNativeCommandArgumentPassing = 'Standard'; & 'C:\\claude.exe' '--agent-id' 'a' } " +
-        "else { & 'C:\\claude.exe' '--agent-id' 'a' }"
+        "else { & 'C:\\claude.exe' '--agent-id' 'a' } }"
     )
   })
 
@@ -329,7 +417,18 @@ describe('ClaudeAgentTeamsService', () => {
     const request = (argv: string[], envPane = leaderPane) =>
       service.handleTmuxCompat({ teamId, token, envPane, argv }, api)
 
-    await request(['split-window', '-d', '-t', leaderPane, '-h', '-P', '-F', '#{pane_id}', '--', 'cat'])
+    await request([
+      'split-window',
+      '-d',
+      '-t',
+      leaderPane,
+      '-h',
+      '-P',
+      '-F',
+      '#{pane_id}',
+      '--',
+      'cat'
+    ])
 
     await expect(
       request([
@@ -456,6 +555,12 @@ describe('ClaudeAgentTeamsService', () => {
 
     expect(splitCalls.at(-1)?.handle).toBe('leader-handle-reminted')
     expect(api.resolveHandleForPaneKey).toHaveBeenCalledWith('tab-1:leader-leaf')
+
+    service.forgetTerminalHandle('leader-handle')
+    await expect(request(['list-panes', '-F', '#{pane_id}'])).resolves.toMatchObject({
+      ok: true,
+      stdout: '%1\n%2\n'
+    })
   })
 
   it('re-resolves a stale teammate handle through its paneKey instead of failing send-keys', async () => {

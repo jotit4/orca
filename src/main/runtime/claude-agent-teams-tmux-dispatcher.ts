@@ -14,10 +14,14 @@ import {
 } from './claude-agent-teams-pane-layout'
 import { isStaleHandleError, withLiveHandle } from './claude-agent-teams-handle-refresh'
 import type { AgentTeam, AgentTeamsTerminalApi, TeamPane } from './claude-agent-teams-types'
+import { ClaudeAgentTeamsPaneReplacement } from './claude-agent-teams-pane-replacement'
 
 type ResolvedTarget = { type: 'pane'; pane: TeamPane } | { type: 'window' }
 
 export class ClaudeAgentTeamsTmuxDispatcher {
+  private readonly replacement = new ClaudeAgentTeamsPaneReplacement((...args) =>
+    this.notifyTeammateLaunch(...args)
+  )
   async dispatch(
     team: AgentTeam,
     command: string,
@@ -42,7 +46,7 @@ export class ClaudeAgentTeamsTmuxDispatcher {
         return await this.splitWindow(team, args, envPane, api)
       case 'respawn-pane':
       case 'respawnp':
-        return await this.respawnPane(team, args, envPane, api)
+        return await this.replacement.respawnPane(team, args, envPane, api)
       case 'select-layout':
         return this.selectLayout(team, args, envPane)
       case 'resize-pane':
@@ -125,6 +129,10 @@ export class ClaudeAgentTeamsTmuxDispatcher {
         activate: false
       })
     )
+    if (!team.panes.has(team.leaderPane)) {
+      await api.closeTerminal(split.handle)
+      throw new Error('team exited during split')
+    }
     const pane: TeamPane = {
       fakePaneId,
       handle: split.handle,
@@ -142,69 +150,17 @@ export class ClaudeAgentTeamsTmuxDispatcher {
     // command rides straight on split-window instead of the two-step
     // cat-then-respawn dance (see respawnPane below, which is the common
     // path and where this same notification also fires).
-    this.notifyTeammateLaunch(team, split.handle, pane.paneKey, parsed.positional.join(' ') || '', api)
+    this.notifyTeammateLaunch(
+      team,
+      split.handle,
+      pane.paneKey,
+      parsed.positional.join(' ') || '',
+      api
+    )
     if (!parsed.flags.has('-P')) {
       return ''
     }
     return `${renderTmuxFormat(tmuxValue(parsed, '-F'), formatContext(team, pane), fakePaneId)}\n`
-  }
-
-  // Why: Claude Code's pane backend creates a teammate pane in two steps — it
-  // splits a holding pane running `cat`, then `respawn-pane -k`s it with the
-  // real teammate command. Orca panes are PTYs that cannot swap their program in
-  // place, so we honor respawn by closing the placeholder terminal and
-  // re-splitting from the same origin with the real command, keeping the fake
-  // pane id stable so later send-keys/kill-pane/list-panes still resolve.
-  private async respawnPane(
-    team: AgentTeam,
-    args: string[],
-    envPane: string,
-    api: AgentTeamsTerminalApi
-  ): Promise<string> {
-    const parsed = parseTmuxArgs(args, ['-c', '-e', '-t'], ['-k'])
-    const pane = this.resolvePane(team, tmuxValue(parsed, '-t') ?? envPane)
-    if (pane.fakePaneId === team.leaderPane) {
-      throw new Error('refusing to respawn leader pane')
-    }
-    const command = parsed.positional.join(' ')
-    if (!command) {
-      return ''
-    }
-    const origin =
-      (pane.splitFromPane ? team.panes.get(pane.splitFromPane) : undefined) ??
-      team.panes.get(team.leaderPane)!
-    // Why: create the replacement before destroying the placeholder so a failed
-    // split leaves the fake pane id pointing at a still-live terminal; on cleanup
-    // failure, discard the new split and keep the placeholder registered.
-    const previousHandle = pane.handle
-    const split = await withLiveHandle(origin, api, (handle) =>
-      api.splitTerminal(handle, {
-        direction: pane.splitDirection ?? 'horizontal',
-        command: claudeAgentTeamsPaneCommand(command, team.paneShell),
-        env: paneEnv(team, pane.fakePaneId),
-        envToDelete: ['TERM_PROGRAM', 'ORCA_ATTRIBUTION_SHIM_DIR'],
-        activate: false
-      })
-    )
-    try {
-      await api.closeTerminal(previousHandle)
-    } catch (error) {
-      // Why: the placeholder is already gone if its own handle went stale —
-      // that is the expected shape of this failure, not a cleanup problem.
-      if (!isStaleHandleError(error)) {
-        await api.closeTerminal(split.handle).catch(() => {})
-        throw error
-      }
-    }
-    pane.handle = split.handle
-    // Why (#11739): respawn mints a new terminal, so the identity behind
-    // `handle` changes too — refresh it alongside the handle.
-    pane.paneKey = api.resolvePaneKeyForHandle(split.handle) ?? pane.paneKey
-    // Why: this is the moment the pane actually starts running the real
-    // teammate command (the split above only replaced the `cat` holding
-    // pane) — the point where auto-attach has a real launch command to read.
-    this.notifyTeammateLaunch(team, split.handle, pane.paneKey, command, api)
-    return ''
   }
 
   // Why: single choke point for both launch shapes (split-window carrying the
